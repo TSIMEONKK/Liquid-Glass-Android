@@ -1729,6 +1729,8 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         target.pressScale = src.pressScale
         target.elasticity = src.elasticity
         target.enableBackdropBlur = src.enableBackdropBlur
+        // Android 13 位移贴图策略必须同步给附属玻璃，避免只有主视图跳过生成。
+        target.skipMapGenOnApi33 = src.skipMapGenOnApi33
         target.blurAmount = src.blurAmount
         target.saturation = src.saturation
         target.overLight = src.overLight

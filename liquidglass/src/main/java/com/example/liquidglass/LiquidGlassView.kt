@@ -79,19 +79,18 @@ open class LiquidGlassView @JvmOverloads constructor(
         }
 
     /**
-     * 是否跳过 Android 13（API 33）的位移贴图生成。
+     * 是否跳过不支持透镜管线版本的位移贴图生成。
      *
-     * 仅 API 33 会受此开关影响。设为 true 可规避该版本上生成位图时的频繁 GC，
-     * 代价是旧渲染管线的色差效果会被跳过；其他 Android 版本保持原有行为。
+     * API 33 以下默认开启：这些版本无法使用透镜管线，生成位移贴图容易造成
+     * GC 峰值。设为 true 时旧渲染管线的色差效果会被跳过；仍可按实例覆盖。
      */
-    var skipMapGenOnApi33 = false
+    var skipMapGenOnApi33 = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
         set(value) {
             if (field == value) return
             field = value
-            if (Build.VERSION.SDK_INT != Build.VERSION_CODES.TIRAMISU) return
 
             if (value) {
-                // 使后台正在生成的结果过期，并及时释放 API 33 已缓存的位图内存。
+                // 使后台正在生成的结果过期，并及时释放已缓存的位图内存。
                 mapGenerationId++
                 mapGenerationPending = false
                 displacementMaps?.values?.forEach { it.recycle() }
@@ -99,7 +98,7 @@ open class LiquidGlassView @JvmOverloads constructor(
                 aberrationDirty = true
                 invalidate()
             } else {
-                // 恢复 API 33 的默认行为：仅在当前路径确实需要时按需生成。
+                // 恢复默认行为：仅在当前路径确实需要时按需生成。
                 maybeGenerateDisplacementMaps()
             }
         }
@@ -996,11 +995,9 @@ open class LiquidGlassView @JvmOverloads constructor(
         }
     }
 
-    /** 仅 Android 13 可通过兼容性开关跳过位移贴图，其他版本始终保持原逻辑。 */
-    private fun shouldGenerateDisplacementMaps(): Boolean =
-        Build.VERSION.SDK_INT != Build.VERSION_CODES.TIRAMISU ||
-            !skipMapGenOnApi33
-    
+    /** 开关由默认 Android 版本策略初始化，也允许调用方按实例覆盖。 */
+    private fun shouldGenerateDisplacementMaps(): Boolean = !skipMapGenOnApi33
+
     /**
      * 更新阴影效果
      */
