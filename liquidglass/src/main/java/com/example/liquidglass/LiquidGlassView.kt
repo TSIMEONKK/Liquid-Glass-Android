@@ -77,6 +77,33 @@ open class LiquidGlassView @JvmOverloads constructor(
                 invalidate()
             }
         }
+
+    /**
+     * 是否跳过 Android 13（API 33）的位移贴图生成。
+     *
+     * 仅 API 33 会受此开关影响。设为 true 可规避该版本上生成位图时的频繁 GC，
+     * 代价是旧渲染管线的色差效果会被跳过；其他 Android 版本保持原有行为。
+     */
+    var skipMapGenOnApi33 = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (Build.VERSION.SDK_INT != Build.VERSION_CODES.TIRAMISU) return
+
+            if (value) {
+                // 使后台正在生成的结果过期，并及时释放 API 33 已缓存的位图内存。
+                mapGenerationId++
+                mapGenerationPending = false
+                displacementMaps?.values?.forEach { it.recycle() }
+                displacementMaps = null
+                aberrationDirty = true
+                invalidate()
+            } else {
+                // 恢复 API 33 的默认行为：仅在当前路径确实需要时按需生成。
+                maybeGenerateDisplacementMaps()
+            }
+        }
+
     var enableChromaticDispersion = false  // 色散效果（物理光学）
         set(value) {
             if (field != value) {
@@ -809,6 +836,10 @@ open class LiquidGlassView @JvmOverloads constructor(
             blurAmount = ta.getFloat(R.styleable.LiquidGlassView_blurAmount, blurAmount)
             saturation = ta.getFloat(R.styleable.LiquidGlassView_saturation, saturation)
             aberrationIntensity = ta.getFloat(R.styleable.LiquidGlassView_aberrationIntensity, aberrationIntensity)
+            skipMapGenOnApi33 = ta.getBoolean(
+                R.styleable.LiquidGlassView_skipMapGenOnApi33,
+                skipMapGenOnApi33
+            )
             elasticity = ta.getFloat(R.styleable.LiquidGlassView_elasticity, elasticity)
             cornerRadius = ta.getDimension(R.styleable.LiquidGlassView_cornerRadius, cornerRadius)
             bevelWidth = ta.getDimension(R.styleable.LiquidGlassView_bevelWidth, bevelWidth)
@@ -919,6 +950,7 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 完成后自动重绘补上
      */
     private fun generateDisplacementMaps() {
+        if (!shouldGenerateDisplacementMaps()) return
         val w = width
         val h = height
         if (w <= 0 || h <= 0) return
@@ -951,16 +983,23 @@ open class LiquidGlassView @JvmOverloads constructor(
             GlassLensRenderer.isSupported() && lensRenderer?.isAvailable != false
 
     private fun maybeGenerateDisplacementMaps() {
-        if (lensPathLikely()) return
+        if (!shouldGenerateDisplacementMaps() || lensPathLikely()) return
         generateDisplacementMaps()
     }
 
     /** 旧管线需要位移贴图但尚未生成时补一次生成 */
     private fun ensureDisplacementMaps() {
-        if (displacementMaps == null && !mapGenerationPending && width > 0 && height > 0) {
+        if (shouldGenerateDisplacementMaps() && displacementMaps == null && !mapGenerationPending &&
+            width > 0 && height > 0
+        ) {
             generateDisplacementMaps()
         }
     }
+
+    /** 仅 Android 13 可通过兼容性开关跳过位移贴图，其他版本始终保持原逻辑。 */
+    private fun shouldGenerateDisplacementMaps(): Boolean =
+        Build.VERSION.SDK_INT != Build.VERSION_CODES.TIRAMISU ||
+            !skipMapGenOnApi33
     
     /**
      * 更新阴影效果

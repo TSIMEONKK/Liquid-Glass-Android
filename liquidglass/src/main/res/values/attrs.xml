@@ -20,6 +20,8 @@
         <attr name="blurAmount" format="float" />
         <attr name="saturation" format="float" />
         <attr name="aberrationIntensity" format="float" />
+        <!-- 仅 Android 13：跳过位移贴图生成以减少 Bitmap 分配和 GC -->
+        <attr name="skipMapGenOnApi33" format="boolean" />
         <attr name="elasticity" format="float" />
         <attr name="cornerRadius" format="dimension" />
         <!-- 背景来源视图 id（不填 = 直接父容器） -->
