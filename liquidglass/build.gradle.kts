@@ -16,10 +16,12 @@ android {
 
         // NDK 原生模糊/色差加速（CPU 管线）
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // 同时产出 32/64 位 ARM 与 x86 模拟器所需的原生库。
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64", "x86")
         }
 
         // 16KB 页对齐（Android 16 设备的 ELF 对齐要求；NDK r28 起默认，r27 需显式开启）
+        @Suppress("UnstableApiUsage")
         externalNativeBuild {
             cmake {
                 arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
@@ -72,7 +74,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.QWEA0"
                 artifactId = "liquidglass"
-                version = "2.0.5"
+                version = "2.0.6"
             }
         }
     }
