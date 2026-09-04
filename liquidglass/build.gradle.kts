@@ -74,7 +74,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.QWEA0"
                 artifactId = "liquidglass"
-                // 当前分支包含 2.0.6 之后的功能修复，沿用更高的库版本号。
+                // develop 已包含 2.0.9 的独立发布，合并较早的 main 时不回退版本号。
                 version = "2.0.9"
             }
         }

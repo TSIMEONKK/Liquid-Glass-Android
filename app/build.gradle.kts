@@ -22,8 +22,8 @@ android {
         applicationId = "com.example.liquidglass"
         minSdk = 24
         targetSdk = 35
-        versionCode = 206
-        versionName = "2.0.6"
+        versionCode = 208
+        versionName = "2.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
