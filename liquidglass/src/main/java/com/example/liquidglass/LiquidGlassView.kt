@@ -1107,6 +1107,10 @@ open class LiquidGlassView @JvmOverloads constructor(
                     ta.getFloat(R.styleable.LiquidGlassView_pressGlassTintStrength, 0f)
                 )
             }
+            enableDynamicBackground = ta.getBoolean(
+                R.styleable.LiquidGlassView_enableDynamicBackground,
+                enableDynamicBackground
+            )
             cornerRadius = ta.getDimension(R.styleable.LiquidGlassView_cornerRadius, cornerRadius)
             if (ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopLeft) ||
                 ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopRight) ||

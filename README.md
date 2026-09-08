@@ -300,7 +300,7 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 
 Declared under the `LiquidGlassView` styleable, namespace `app`:
 
-`displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `elasticity` ·
+`displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `enableDynamicBackground` · `elasticity` ·
 `cornerRadius` (dimension) · `glassMaterial` (`regular` | `clear`) · `bevelWidth` (dimension) ·
 `refractionHeight` (dimension) · `refractionFalloff` (float 0–4) · `refractionNoFold` · `refractionOutward` ·
 `adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
@@ -763,7 +763,7 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 
 声明在 `LiquidGlassView` styleable 下，命名空间 `app`：
 
-`displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `elasticity` ·
+`displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `enableDynamicBackground` · `elasticity` ·
 `cornerRadius`（dimension） · `glassMaterial`（`regular` | `clear`） · `bevelWidth`（dimension） ·
 `refractionHeight`（dimension） · `refractionFalloff`（float 0–4） · `refractionNoFold` · `refractionOutward` ·
 `adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
