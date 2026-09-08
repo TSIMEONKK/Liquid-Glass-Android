@@ -21,6 +21,9 @@
  *     app:saturation="140"
  *     app:aberrationIntensity="2"
  *     app:elasticity="0.15"
+ *     app:pressScale="0.95"
+ *     app:pressGlassTint="#0A84FF"
+ *     app:pressGlassTintStrength="0.12"
  *     app:cornerRadius="999"
  *     app:glassTint="#0A84FF"
  *     app:glassTintStrength="0.3" />
@@ -299,10 +302,39 @@ open class LiquidGlassView @JvmOverloads constructor(
     var enablePressEffect = true
 
     /** 按压时的缩放目标（1 = 按下不缩放） */
-    var pressScale = 0.95f
+    open var pressScale = 0.95f
         set(value) {
             field = value.coerceIn(0.5f, 1f)
         }
+
+    /**
+     * 按下时叠加在玻璃上的颜色；alpha 即最大叠加强度。
+     *
+     * 默认透明：只有显式配置后才启用按下态染色。
+     * 例如普通玻璃为 [glassTint] 时，可设置同色系的半透明颜色作为按下反馈。
+     */
+    var pressGlassTint: Int = Color.TRANSPARENT
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
+    /**
+     * 设置按压态玻璃染色并单独指定强度（忽略 [color] 自带的 alpha）。
+     *
+     * @param color 按压态染色色相，alpha 分量会被忽略
+     * @param strength 按压态染色强度，范围为 0-1
+     */
+    fun setPressGlassTint(color: Int, strength: Float) {
+        pressGlassTint = Color.argb(
+            (strength.coerceIn(0f, 1f) * 255f).roundToInt(),
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color)
+        )
+    }
 
     private var cornerTL = 999f
     private var cornerTR = 999f
@@ -963,6 +995,25 @@ open class LiquidGlassView @JvmOverloads constructor(
                 skipMapGenOnApi33
             )
             elasticity = ta.getFloat(R.styleable.LiquidGlassView_elasticity, elasticity)
+            enablePressEffect = ta.getBoolean(
+                R.styleable.LiquidGlassView_enablePressEffect,
+                enablePressEffect
+            )
+            pressScale = ta.getFloat(R.styleable.LiquidGlassView_pressScale, pressScale)
+            pressGlassTint = ta.getColor(
+                R.styleable.LiquidGlassView_pressGlassTint,
+                pressGlassTint
+            )
+            // 强度必须与颜色同时配置；否则默认透明色会被改成半透明黑色。
+            // 显式给出二者时，强度覆盖颜色自带 alpha，与 glassTintStrength 语义一致。
+            if (ta.hasValue(R.styleable.LiquidGlassView_pressGlassTint) &&
+                ta.hasValue(R.styleable.LiquidGlassView_pressGlassTintStrength)
+            ) {
+                setPressGlassTint(
+                    pressGlassTint,
+                    ta.getFloat(R.styleable.LiquidGlassView_pressGlassTintStrength, 0f)
+                )
+            }
             cornerRadius = ta.getDimension(R.styleable.LiquidGlassView_cornerRadius, cornerRadius)
             if (ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopLeft) ||
                 ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopRight) ||
@@ -1239,11 +1290,14 @@ open class LiquidGlassView @JvmOverloads constructor(
         // ✅ 无障碍降级：不透明材质（Reduce Transparency）
         if (shouldRenderOpaque()) {
             drawOpaqueFallback(canvas)
+            // 不透明降级也保留按压染色，避免无障碍模式下交互反馈缺失。
+            drawPressTintOverlay(canvas)
             return
         }
 
         // ✅ API 33+ 统一透镜管线（Liquid Glass 2.0：折射+色散+高光+内阴影+融合）
         if (tryDrawLensGlass(canvas, calculatedBlurRadius)) {
+            drawPressTintOverlay(canvas)
             // 边缘高光由着色器的法线光照完成，无需 Kotlin 层描边
             if (enableDynamicBackground) {
                 invalidate()
@@ -1254,6 +1308,7 @@ open class LiquidGlassView @JvmOverloads constructor(
         // ✅ API 31+ 旧 GPU 快速路径（模糊+饱和度，零拷贝）
         if (tryDrawHardwareBlur(canvas, calculatedBlurRadius)) {
             drawGlassTintOverlay(canvas)
+            drawPressTintOverlay(canvas)
             if (enableEdgeHighlight) {
                 drawEdgeHighlight(canvas, bounds)
             }
@@ -1311,6 +1366,7 @@ open class LiquidGlassView @JvmOverloads constructor(
                     }
                 }
                 drawGlassTintOverlay(canvas)
+                drawPressTintOverlay(canvas)
 
                 canvas.restoreToCount(saveCount)
             }
@@ -1325,6 +1381,28 @@ open class LiquidGlassView @JvmOverloads constructor(
         if (enableDynamicBackground) {
             invalidate()
         }
+    }
+
+    /**
+     * 绘制按压态颜色。透明度随 [pressDepth] 动画插值，三条渲染管线共用，
+     * 因此无论设备是否支持透镜/硬件模糊效果，按下反馈都保持一致。
+     */
+    private fun drawPressTintOverlay(canvas: Canvas) {
+        if (!enablePressEffect || pressDepth <= 0f || Color.alpha(pressGlassTint) == 0) return
+
+        val alpha = (Color.alpha(pressGlassTint) * pressDepth).roundToInt().coerceIn(0, 255)
+        if (alpha == 0) return
+
+        val saveCount = canvas.save()
+        canvas.clipPath(clipPath)
+        tintOverlayPaint.color = Color.argb(
+            alpha,
+            Color.red(pressGlassTint),
+            Color.green(pressGlassTint),
+            Color.blue(pressGlassTint)
+        )
+        canvas.drawPath(clipPath, tintOverlayPaint)
+        canvas.restoreToCount(saveCount)
     }
 
     // ==================== 透镜管线（Liquid Glass 2.0） ====================

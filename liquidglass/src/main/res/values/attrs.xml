@@ -23,6 +23,12 @@
         <!-- 仅 Android 13：跳过位移贴图生成以减少 Bitmap 分配和 GC -->
         <attr name="skipMapGenOnApi33" format="boolean" />
         <attr name="elasticity" format="float" />
+        <!-- 按压交互：pressScale 为按下时目标缩放（0.5-1）；
+             pressGlassTintStrength 显式设置时会覆盖 pressGlassTint 的 alpha -->
+        <attr name="enablePressEffect" format="boolean" />
+        <attr name="pressScale" format="float" />
+        <attr name="pressGlassTint" format="color" />
+        <attr name="pressGlassTintStrength" format="float" />
         <attr name="cornerRadius" format="dimension" />
         <!-- 逐角圆角（给了任一项就按逐角生效，没给的角沿用 cornerRadius） -->
         <attr name="cornerRadiusTopLeft" format="dimension" />
