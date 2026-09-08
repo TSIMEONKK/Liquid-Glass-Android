@@ -30,7 +30,12 @@ import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.os.Build
 import android.util.Log
+import android.view.View
 import androidx.annotation.RequiresApi
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal class GlassLensRenderer {
@@ -60,10 +65,16 @@ internal class GlassLensRenderer {
             uniform float  blendK;
             uniform float  bevel;
             uniform float  refractPx;
+            uniform float  falloff;      // 折射剖面：> 0 为逆幂（引力透镜）衰减指数，0 = 平方斜面
+            uniform float  refractDir;   // -1 向内采样（默认，与 iOS 一致：内侧压缩镜像）/ +1 向外（可选的凸透镜模式）
+            uniform float2 sampleLo;     // 采样安全区（录制内容坐标）：区外没有内容，读到的是透明黑
+            uniform float2 sampleHi;
             uniform float  dispersion;
             uniform float2 lightDir;
             uniform float  specStrength;
             uniform float  innerShadow;
+            uniform float  rimBandMax;   // 贴边高光带宽度上限（px，小控件按短边收）
+            uniform float  shadowMax;    // 内阴影带宽度上限（px，小控件按短边收）
             uniform float4 tintColor;
             uniform float  adaptiveTint;
             uniform float4 glassTint;
@@ -131,17 +142,30 @@ internal class GlassLensRenderer {
                     n = float2(0.0, -1.0);
                 }
 
-                // 厚度剖面：t=1 平坦内部，t=0 边缘；slope 为斜面陡峭度
+                // 厚度剖面：t=1 平坦内部，t=0 边缘；slope 为斜面陡峭度（折射位移的比例）
                 float t = clamp(-d / max(bevel, 1.0), 0.0, 1.0);
                 float edge = 1.0 - t;
-                float slope = edge * edge;
+                float slope;
+                if (falloff > 0.001) {
+                    // 引力透镜式逆幂衰减：位移 ∝ (1 + x/k)^-p，核半径 k = 斜面宽度的 1/4，
+                    // 减去带末端的值再归一化，贴边 = 1、带末端平滑落到 0。越贴边越剧烈：
+                    // p = 2 时离边 k 处只剩 1/4，绝大部分弯折压在最外几个像素，
+                    // 内侧只留一段缓慢回落的轻微放大尾巴
+                    float gB = pow(5.0, -falloff);
+                    slope = (pow(1.0 + 4.0 * t, -falloff) - gB) / (1.0 - gB);
+                } else {
+                    // 平方斜面：弯折沿整条斜面带均匀铺开
+                    slope = edge * edge;
+                }
 
-                // 折射：沿法线向内采样（透镜放大感，边缘为内侧背景的压缩带）
-                // ⚠️ 必须向内：RenderEffect 的 RuntimeShader 子输入只保证"输出裁剪区"
-                // 内可采样（Android 未暴露 Skia 的 childSampleRadius），向外采样会
-                // 读到透明黑，在轮廓处形成黑边
+                // 折射：refractDir = -1 沿法线向内采样（默认，与 iOS 一致）——边缘是内侧背景的
+                // 压缩镜像；+1 为可选的凸透镜模式，向外采样，形状外的背景被弯进边缘，
+                // 靠近的内容还没进到玻璃下面就先出现在边缘，进来之后沿边缘延展。
+                // RuntimeShader 子输入只保证"输出裁剪区"内可采样（Android 未暴露 Skia 的
+                // childSampleRadius），向外采样必须让输出区覆盖整个外扩录制区——见 draw()
+                // 里的外层合成节点；采样再由 sampleLo/Hi 钳在有内容的范围内
                 float refr = refractPx * (1.0 + 0.6 * press);
-                float2 offset = -n * (slope * refr);
+                float2 offset = n * (refractDir * slope * refr);
 
                 // 触摸局部液态凸起（手指下方的局部放大：采样向触点收缩）
                 if (touchAmp > 0.001) {
@@ -159,9 +183,9 @@ internal class GlassLensRenderer {
                 float2 cG = coord + offset;
                 float2 cB = coord + offset * (1.0 + dispersion * slope);
 
-                // 安全钳制到视图内容区（子输入可保证的采样范围），杜绝透明黑
-                float2 lo = float2(margin + 1.0, margin + 1.0);
-                float2 hi = lo + viewSize - float2(2.0, 2.0);
+                // 安全钳制到有内容的采样区，杜绝透明黑
+                float2 lo = sampleLo;
+                float2 hi = sampleHi;
                 cR = clamp(cR, lo, hi);
                 cG = clamp(cG, lo, hi);
                 cB = clamp(cB, lo, hi);
@@ -227,31 +251,33 @@ internal class GlassLensRenderer {
                 }
 
                 // 光照：同一法线场驱动。整圈轮廓的明暗只由 dot(N, -L) 决定，
-                // 没有与方向无关的常亮项——背光侧不会残留一条固定亮线。
-                // 角度瓣用 pow 2.5 铺开成连续斜面渐变，另叠一个 pow 8 的收紧
-                // 核保留正对光源处的亮点，避免大斜面时出现大面积泛白光斑
+                // 没有与方向无关的常亮项——侧向（法线垂直于光线处）亮度归零，不会
+                // 留下一圈固定描边。两个角度瓣：迎光侧主瓣（pow 2.5 铺开成连续斜面
+                // 渐变，叠一个 pow 8 的收紧核保留正对光源处的亮点，避免大斜面时出现
+                // 大面积泛白光斑）+ 背光侧的弱回光瓣（透明介质的内壁反射：iOS 玻璃
+                // 右下角那道弱一截的亮边，没有它背光半圈在深色背景上会整段消失）
                 float facing = dot(n, -lightDir);
                 float facingPos = max(facing, 0.0);
                 float facingNeg = max(-facing, 0.0);
 
-                // 贴边窄带（宽度与斜面弱相关，上限 9px）+ 最外层 1px 发丝带
-                float bandW = clamp(bevel * 0.3, 2.0, 9.0);
+                // 贴边窄带（宽度与斜面弱相关，上限默认 9px、小控件按短边收）+ 最外层 1px 发丝带
+                float bandW = clamp(bevel * 0.3, 2.0, rimBandMax);
                 float rim = clamp(1.0 - (-d - 0.5) / bandW, 0.0, 1.0) * cov;
                 float hair = clamp(1.0 - abs(d + 1.0) / 1.5, 0.0, 1.0) * cov;
                 float lobe = pow(facingPos, 2.5);
-                float spec = (rim * (0.34 * lobe + 0.22 * pow(facingPos, 8.0))
-                              + hair * 0.34 * lobe)
+                float back = pow(facingNeg, 2.5);
+                float spec = (rim * (0.34 * lobe + 0.22 * pow(facingPos, 8.0) + 0.15 * back)
+                              + hair * (0.34 * lobe + 0.15 * back))
                              * specStrength * (1.0 - 0.35 * press);
                 col += float3(spec);
 
-                // 内阴影：背光侧边缘内部微暗（宽度独立于斜面，上限 28px），
-                // 再叠一层贴边压暗与迎光侧的亮线对称——背光侧收成暗边，
-                // 整圈轮廓因此是"迎光渐亮 → 侧向消隐 → 背光渐暗"的连续过渡
-                float shadowW = clamp(bevel, 4.0, 28.0);
+                // 内阴影：背光侧边缘内部微暗（宽度独立于斜面，上限默认 28px、小控件按短边收）。
+                // 暗带落在回光亮边的内侧：背光侧是"细亮边 → 内侧暗带"，迎光侧是"亮边 → 亮渐变"，
+                // 整圈轮廓因此是"迎光渐亮 → 侧向消隐 → 背光弱亮 + 内阴影"的连续过渡
+                float shadowW = clamp(bevel, 4.0, shadowMax);
                 float shadowBand = pow(clamp(1.0 + d / shadowW, 0.0, 1.0), 1.5);
                 float ish = shadowBand * facingNeg * innerShadow;
-                float rimDark = (rim * 0.6 + hair * 0.4) * pow(facingNeg, 1.5) * innerShadow;
-                col = col * clamp(1.0 - 0.45 * ish - 0.22 * rimDark, 0.0, 1.0);
+                col = col * (1.0 - 0.45 * ish);
 
                 col = clamp(col, float3(0.0), float3(1.0));
                 return half4(half3(col * cov), half(cov));
@@ -277,6 +303,10 @@ internal class GlassLensRenderer {
         val blendK: Float,
         val bevel: Float,
         val refract: Float,
+        val falloff: Float,     // 折射剖面：> 0 逆幂衰减指数，0 = 平方斜面
+        val outward: Boolean,   // 折射向外采样（true）/ 向内（旧行为）
+        val rimBandMax: Float,  // 贴边高光带宽度上限（px）
+        val shadowMax: Float,   // 内阴影带宽度上限（px）
         val dispersion: Float,
         val lightX: Float, val lightY: Float,
         val spec: Float,
@@ -291,6 +321,23 @@ internal class GlassLensRenderer {
     )
 
     private val renderNode = RenderNode("LiquidGlassLens")
+
+    /**
+     * 向外折射用的外层合成节点。RenderEffect 的输出区是节点范围与画布裁剪区的交集，
+     * 带效果的节点直接画到视图画布上会被裁到视图矩形，margin 里录下的内容对着色器
+     * 不可见（RuntimeShader 子输入只保证输出区内可采样）。把它画进一个自带合成层、
+     * 范围等于整个录制区的外层节点：层内裁剪区就是录制区，着色器采得到 margin；
+     * 外层节点再画到视图画布上时才被裁到视图矩形
+     */
+    private val layerNode = RenderNode("LiquidGlassLensLayer").apply {
+        setUseCompositingLayer(true, null)
+    }
+
+    // 采样安全区（录制内容坐标），随玻璃相对背景来源的位置变化
+    private var sampleLoX = 0f
+    private var sampleLoY = 0f
+    private var sampleHiX = 0f
+    private var sampleHiY = 0f
 
     private var shader: RuntimeShader? = null
     private var shaderBroken = false
@@ -341,7 +388,23 @@ internal class GlassLensRenderer {
             return false
         }
 
-        if (params != lastParams || width != lastWidth || height != lastHeight || margin != lastMargin) {
+        // 计算相对背景视图的偏移（屏幕坐标差：兼容滚动容器，且背景视图在
+        // 另一个 window（Dialog/PopupWindow）时也成立）
+        glassView.getLocationOnScreen(location)
+        parent.getLocationOnScreen(parentLocation)
+        val offsetX = (location[0] - parentLocation[0]).toFloat()
+        val offsetY = (location[1] - parentLocation[1]).toFloat()
+
+        val recW = width + 2 * margin
+        val recH = height + 2 * margin
+        val boundsChanged = updateSampleBounds(
+            params.outward, margin, width, height, recW, recH,
+            offsetX, offsetY, parent.width, parent.height
+        )
+
+        if (boundsChanged || params != lastParams ||
+            width != lastWidth || height != lastHeight || margin != lastMargin
+        ) {
             try {
                 renderNode.setRenderEffect(buildEffect(sh, params, margin, width, height))
             } catch (e: Exception) {
@@ -355,16 +418,39 @@ internal class GlassLensRenderer {
             lastMargin = margin
         }
 
-        // 计算相对背景视图的偏移（屏幕坐标差：兼容滚动容器，且背景视图在
-        // 另一个 window（Dialog/PopupWindow）时也成立）
-        glassView.getLocationOnScreen(location)
-        parent.getLocationOnScreen(parentLocation)
-        val offsetX = (location[0] - parentLocation[0]).toFloat()
-        val offsetY = (location[1] - parentLocation[1]).toFloat()
+        if (params.outward) {
+            // 见 layerNode 的说明：带效果的节点画进外层合成节点，让着色器的输出区覆盖整个录制区
+            renderNode.setPosition(0, 0, recW, recH)
+            recordBackdrop(parent, glassView, offsetX, offsetY, margin, recW, recH)
+            layerNode.setPosition(-margin, -margin, width + margin, height + margin)
+            val layerCanvas = layerNode.beginRecording(recW, recH)
+            try {
+                layerCanvas.drawRenderNode(renderNode)
+            } finally {
+                layerNode.endRecording()
+            }
+            canvas.drawRenderNode(layerNode)
+        } else {
+            // 录制区域向四周外扩 margin：模糊在边缘处能采到真实内容而非透明黑
+            renderNode.setPosition(-margin, -margin, width + margin, height + margin)
+            recordBackdrop(parent, glassView, offsetX, offsetY, margin, recW, recH)
+            // 形状覆盖率由着色器输出（形状外 alpha=0），无需 clipPath
+            canvas.drawRenderNode(renderNode)
+        }
+        return true
+    }
 
-        // 录制区域向四周外扩 margin：折射/模糊在边缘处能采到真实内容而非透明黑
-        renderNode.setPosition(-margin, -margin, width + margin, height + margin)
-        val recordingCanvas = renderNode.beginRecording(width + 2 * margin, height + 2 * margin)
+    /** 把背景来源画进 renderNode（节点局部坐标，原点在外扩后的录制区左上角） */
+    private fun recordBackdrop(
+        parent: View,
+        glassView: LiquidGlassView,
+        offsetX: Float,
+        offsetY: Float,
+        margin: Int,
+        recW: Int,
+        recH: Int
+    ) {
+        val recordingCanvas = renderNode.beginRecording(recW, recH)
         try {
             recordingCanvas.translate(margin - offsetX, margin - offsetY)
             glassView.isCapturingBackdrop = true
@@ -378,10 +464,50 @@ internal class GlassLensRenderer {
         } finally {
             renderNode.endRecording()
         }
+    }
 
-        // 形状覆盖率由着色器输出（形状外 alpha=0），无需 clipPath
-        canvas.drawRenderNode(renderNode)
-        return true
+    /**
+     * 采样安全区。向内采样时是视图矩形（旧行为）；向外采样时是整个录制区与背景来源
+     * 矩形的交集——来源之外没有内容，读到的是透明黑。滚动时来源边界逐帧移动，量化到
+     * 4px 免得每帧重建 effect；玻璃离来源边缘超过 margin 时安全区恒为整个录制区
+     *
+     * @return 安全区是否变化（变化则需重建 effect）
+     */
+    private fun updateSampleBounds(
+        outward: Boolean,
+        margin: Int,
+        width: Int,
+        height: Int,
+        recW: Int,
+        recH: Int,
+        offsetX: Float,
+        offsetY: Float,
+        parentW: Int,
+        parentH: Int
+    ): Boolean {
+        val loX: Float
+        val loY: Float
+        val hiX: Float
+        val hiY: Float
+        if (outward) {
+            val pl = margin - offsetX
+            val pt = margin - offsetY
+            loX = max(1f, floor(max(1f, pl + 1f) / 4f) * 4f)
+            loY = max(1f, floor(max(1f, pt + 1f) / 4f) * 4f)
+            hiX = max(loX, min(recW - 1f, ceil(min(recW - 1f, pl + parentW - 1f) / 4f) * 4f))
+            hiY = max(loY, min(recH - 1f, ceil(min(recH - 1f, pt + parentH - 1f) / 4f) * 4f))
+        } else {
+            loX = margin + 1f
+            loY = margin + 1f
+            hiX = margin + width - 1f
+            hiY = margin + height - 1f
+        }
+        val changed = loX != sampleLoX || loY != sampleLoY || hiX != sampleHiX || hiY != sampleHiY
+        sampleLoX = loX
+        sampleLoY = loY
+        sampleHiX = hiX
+        sampleHiY = hiY
+        return changed
     }
 
     /**
@@ -405,10 +531,16 @@ internal class GlassLensRenderer {
         sh.setFloatUniform("blendK", p.blendK)
         sh.setFloatUniform("bevel", p.bevel)
         sh.setFloatUniform("refractPx", p.refract)
+        sh.setFloatUniform("falloff", p.falloff)
+        sh.setFloatUniform("refractDir", if (p.outward) 1f else -1f)
+        sh.setFloatUniform("sampleLo", sampleLoX, sampleLoY)
+        sh.setFloatUniform("sampleHi", sampleHiX, sampleHiY)
         sh.setFloatUniform("dispersion", p.dispersion)
         sh.setFloatUniform("lightDir", p.lightX, p.lightY)
         sh.setFloatUniform("specStrength", p.spec)
         sh.setFloatUniform("innerShadow", p.innerShadow)
+        sh.setFloatUniform("rimBandMax", p.rimBandMax)
+        sh.setFloatUniform("shadowMax", p.shadowMax)
         sh.setFloatUniform(
             "tintColor",
             Color.red(p.tint) / 255f,
@@ -443,6 +575,7 @@ internal class GlassLensRenderer {
 
     fun release() {
         renderNode.discardDisplayList()
+        layerNode.discardDisplayList()
         shader = null
         lastParams = null
     }

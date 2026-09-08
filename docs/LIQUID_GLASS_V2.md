@@ -23,29 +23,42 @@ backdrop 录制（带 margin 外扩）
       1. sceneSDF：圆角矩形 SDF（实时跟随 cornerRadius/尺寸；可选第二形状 smin 融合）
       2. 覆盖率：SDF ±0.75px 抗锯齿，形状外 alpha=0（不再需要 clipPath）
       3. 法线：SDF 数值梯度 → 屏幕空间外法线
-      4. 厚度剖面：bevelWidth 宽的斜面带，内部平坦
-      5. 折射：沿法线向内采样 refractionHeight × slope² → 边缘呈现内侧背景的
-         压缩放大带（透镜感）
+      4. 厚度剖面：bevelWidth 宽的斜面带，内部平坦。剖面由 refractionFalloff 决定：
+         > 0 为逆幂（引力透镜）衰减 (1 + x/k)^-p，k = bevelWidth / 4，带末端归零，
+         越贴边越剧烈；0 = 平方斜面 (1 - t)²，弯折沿整条带均匀铺开
+      5. 折射：沿法线向内采样 refractionHeight × slope → 贴边一圈内侧背景的
+         压缩镜像环（默认允许折返）；refractionOutward = true 时向外采样
+         （可选的凸透镜模式：形状外的背景被弯进边缘，还没进到玻璃下面的内容
+         先出现在边缘，进来之后沿边缘延展）
       6. 色散：R/G/B 三通道折射量 ×(1∓dispersion·slope) → 边缘光谱边纹
       7. 触摸凸起：手指下方高斯泡状局部放大（press uniform 联动）
       8. 饱和度（提饱和端 vibrancy 曲线：低饱和多提/高饱和少提/高光保护）
          → 自适应染色（enableAdaptiveTint 时按局部亮度逐像素过渡）/Clear 压暗
-      9. 镜面高光：dot(N, -L) 角度瓣（pow 2.5 铺开 + pow 8 收紧核）+ 1px 贴边
-         亮线，两者都随角度衰减到 0，无方向无关的常亮项
-     10. 内阴影：背光侧边缘内部渐暗（厚度感）+ 贴边压暗（与迎光侧亮线对称）
+      9. 镜面高光：dot(N, -L) 迎光主瓣（pow 2.5 铺开 + pow 8 收紧核）+ 背光侧
+         弱回光瓣（内壁反射，约主瓣的 0.45）+ 1px 贴边亮线，全部随角度衰减到 0，
+         侧向消隐，无方向无关的常亮项
+     10. 内阴影：背光侧边缘内部渐暗（厚度感），落在回光亮边的内侧
 ```
 
 关键点：
 
-- **折射方向必须向内**（真机踩坑）：`RenderEffect.createRuntimeShaderEffect`
-  没有暴露 Skia 的 `childSampleRadius`，子输入只保证"输出裁剪区"内可采样，
-  向外采样会读到透明黑 → 轮廓黑边（叠加高光后呈中性灰）。因此折射沿法线
-  向内采样（透镜放大语义），并对采样坐标做视图区安全钳制；录制外扩的
-  `margin` 只服务于模糊 pass 的边缘质量。
+- **向外折射（可选模式）要绕过子输入的裁剪限制**（真机踩坑）：`RenderEffect.createRuntimeShaderEffect`
+  没有暴露 Skia 的 `childSampleRadius`，子输入只保证"输出裁剪区"内可采样；
+  带效果的节点直接画到视图画布上时输出区被裁到视图矩形，margin 里录下的内容
+  对着色器不可见，向外采样读到透明黑 → 轮廓黑边。解法：把带效果的节点画进一个
+  自带合成层（`setUseCompositingLayer`）、范围等于整个录制区的外层节点，层内裁剪区
+  就是录制区，着色器采得到 margin，外层节点再画到视图画布上才被裁到视图矩形。
+  录制 `margin` 随之外扩到折射距离；采样坐标另按"录制区 ∩ 背景来源矩形"钳制
+  （来源之外没有内容），该矩形随滚动变化时量化到 4px 再重建 effect。
+  默认的向内采样（`refractionOutward = false`）不需要这一层，仍是单节点路径。
 - **高光和折射共享同一法线场**：形状怎么变（圆角、融合、副形状移动），
   高光和折射自动跟着变——这是旧"描边渐变"方案做不到的。
 - **uniform 全部量化**（光源 0.005、模糊 0.5px、按压 0.01），静止时不重建
   RenderEffect，每帧只有一次父视图录制。
+- **嵌套采样只允许一层**（`BackdropCapture`）：录制区外扩到邻居玻璃上时，硬件画布会顺手
+  重录邻居的显示列表，邻居的 onDraw 又去采样、又画到它的邻居……层数随互相靠近的玻璃数
+  指数增长。所以已经处在别的玻璃采样里的那次录制，会把子树中其余玻璃临时藏掉：邻居玻璃
+  的采样区里只有背景，没有玻璃。玻璃不折射玻璃，视觉无损。
 
 ## 新增公开 API（LiquidGlassView）
 
@@ -53,8 +66,12 @@ backdrop 录制（带 margin 外扩）
 |---|---|---|
 | `useShaderPipeline` | true | 透镜管线总开关（false = 旧 GPU 管线，A/B 对比用） |
 | `material` | REGULAR | `GlassMaterial.REGULAR`（自适应重可读性）/ `CLEAR`（高透 + 压暗层） |
-| `bevelWidth` | 40px | 边缘斜面带宽度（玻璃"厚度"，2-200） |
-| `refractionHeight` | 200px | 边缘最大折射位移（0-300，采样有安全钳制） |
+| `bevelWidth` | 48px | 边缘斜面带宽度（玻璃"厚度"，2-200） |
+| `refractionHeight` | 160px | 贴边处的折射位移（0-300；refractionNoFold 开着时钳在剖面单调的上限以内） |
+| `refractionFalloff` | 2 | 折射衰减指数（0-4）：> 0 逆幂剖面，弯折压在贴边成细密的压缩环，越大环越细；0 = 平方斜面 |
+| `refractionNoFold` | false | true 时折射单调不翻折：贴边放大率最高、往内降到 1，边缘只放大延展；默认允许折返成压缩镜像环 |
+| `refractionOutward` | false | 可选的凸透镜模式：true 向外采样（形状外的背景弯进边缘）；默认向内压缩镜像，与 iOS 一致 |
+| `adaptiveLensScale` | true | 斜面 / 折射 / 高光带 / 内阴影带按形状短边钳，小控件不再整块都是边缘带 |
 | `dispersionStrength` | 0.10 | 色散强度（与色差/色散开关及其滑杆联动） |
 | `enableSensorHighlight` | false | 高光跟随重力传感器（光源固定在世界坐标）；关闭时用固定的左上光源 |
 | `enableAdaptiveTint` | false | 背景亮度自适应染色（透镜管线逐像素；亮度计仍供 `glassAppearanceListener` 使用） |

@@ -90,7 +90,7 @@ If you're Compose-first, use Kyant0's — don't wrap this one in an `AndroidView
 - **⚡ High Performance** - Optimized with native C++ (NEON SIMD) and smart caching
 - **🎯 Easy Integration** - Simple XML attributes and Kotlin API
 - **🔧 Highly Customizable** - Fine-tune every aspect of the glass effect
-- **🧩 Ready-made Widgets** - `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassDialogBuilder`: pre-wired glass button, FAB, tab bar and Material dialog with click handling and adaptive foreground colors
+- **🧩 Ready-made Widgets** - `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassListItem` + `LiquidGlassListGroup` / `LiquidGlassToast` / `LiquidGlassDialogBuilder`: pre-wired glass button, FAB, tab bar, M3 list (merged panel or separated cards), toast and Material dialog with click handling and adaptive foreground colors
 
 ### 📱 Demo
 
@@ -108,11 +108,21 @@ If you're Compose-first, use Kyant0's — don't wrap this one in an `AndroidView
 
 </div>
 
-Run the sample app for the full playground (4 scenes + a live parameter drawer), or launch the
+Run the sample app for the full playground (9 scenes + a live parameter drawer), or launch the
 hero scene used for the screenshots at the top:
 
 ```bash
 adb shell am start -n com.example.liquidglass/com.example.liquidglass.HeroShowcaseActivity
+```
+
+The **Control Center** scene is a pixel-measured replica of the iOS 26 Control Center over the same
+home screen: pull down to open it, swipe up to close, tap the connectivity tile for the expanded page,
+drag the sliders and toggle the buttons — so you can put it next to a real iPhone and compare the glass
+itself. It hides the demo chrome and system bars; tap the power icon in the top-right corner to bring
+them back.
+
+```bash
+adb shell am start -n com.example.liquidglass/com.example.liquidglass.ProfessionalDemoActivity --es scene control_center
 ```
 
 ### 📦 Installation (JitPack)
@@ -133,7 +143,7 @@ Add the dependency:
 
 ```kotlin
 dependencies {
-    implementation("com.github.QWEA0:liquidglass:v2.0.8")
+    implementation("com.github.QWEA0:liquidglass:v2.0.9")
 }
 ```
 
@@ -169,8 +179,8 @@ drawn **behind** it, so the background content must come first in an overlapping
         android:layout_gravity="center"
         app:cornerRadius="999dp"
         app:glassMaterial="regular"
-        app:refractionHeight="66dp"
-        app:bevelWidth="14dp"
+        app:refractionHeight="12dp"
+        app:bevelWidth="24dp"
         app:dispersionStrength="0.12"
         app:sensorHighlight="true"
         app:adaptiveTint="true">
@@ -214,8 +224,9 @@ That is the whole integration. Everything below is optional tuning.
 ```kotlin
 // --- Liquid Glass 2.0 lens pipeline (API 33+, silently no-ops below) ---
 glass.material = GlassMaterial.REGULAR      // REGULAR (readability) | CLEAR (over media)
-glass.refractionHeight = 200f               // dominant knob: how much lens. px, 0-300
-glass.bevelWidth = 40f                      // glass "thickness" band. px, 2-200
+glass.refractionHeight = 160f               // edge displacement at the rim. px
+glass.bevelWidth = 48f                      // glass "thickness" band. px, 2-200
+glass.refractionFalloff = 2f                // inverse-power falloff: >0 = bending piles up at the rim, 0 = square bevel
 glass.dispersionStrength = 0.10f            // rim spectral fringe, 0-1. >0.25 reads as rainbow
 glass.enableSensorHighlight = true          // highlight tracks device tilt
 glass.enableAdaptiveTint = true             // tint follows backdrop luminance
@@ -250,8 +261,12 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 | `enableDynamicBackground` | Boolean | `false` | — | **Set to `true`** if the backdrop or the glass moves. Otherwise the backdrop is captured once. |
 | `cornerRadius` | Float | `999f` | px | `999f` = pill. The SDF tracks this, so refraction follows the radius. |
 | `material` | `GlassMaterial` | `REGULAR` | — | **33+** `REGULAR` = readability first · `CLEAR` = over media |
-| `refractionHeight` | Float | `200f` | 0–300 px | **33+** Dominant knob for lens strength |
-| `bevelWidth` | Float | `40f` | 2–200 px | **33+** Width of the edge "thickness" band |
+| `refractionHeight` | Float | `160f` | 0–300 px | **33+** How far inward the sample point sits right at the rim. The displacement decays inward along the `refractionFalloff` profile |
+| `bevelWidth` | Float | `48f` | 2–200 px | **33+** Width of the edge "thickness" band — refraction and highlight both live in it |
+| `refractionFalloff` | Float | `2f` | 0–4 | **33+** Inverse-power (gravitational-lens) falloff exponent: displacement ∝ (1 + x/k)^-p with k = `bevelWidth / 4`, reaching 0 at the band's end. The closer to the rim the harder the bend — at p = 2 only a quarter is left one k in, so the fold packs into a thin dense ring at the very edge and the interior keeps a faint magnification tail. Higher = thinner ring. `0` = the old square-bevel profile, bending spread evenly across the band |
+| `refractionNoFold` | Boolean | `false` | — | **33+** `true` caps the displacement where the profile stays monotonic (`bevelWidth / 2` for the square bevel, less for inverse power): content near the rim is only stretched to the edge. Default `false` lets the sampling fold back, which is what draws the compressed mirror ring at the rim |
+| `adaptiveLensScale` | Boolean | `true` | — | **33+** Caps `bevelWidth`, `refractionHeight` and the rim-highlight / inner-shadow bands by the shape's short side (refraction falls off quadratically below 110dp: a 48dp button gets ~38px), so small controls are not all edge band. Shapes of 110dp and up are unaffected at the defaults |
+| `refractionOutward` | Boolean | `false` | — | **33+** Optional convex-lens mode. `false` (default, matches iOS) samples inward: the rim is a compressed mirror of the interior. `true` samples **outward**: content just outside the shape is bent into the rim before it passes under the glass, and content under the glass stretches along the edge |
 | `dispersionStrength` | Float | `0.10f` | 0–1 | **33+** Rim spectral fringe. Above ~0.25 reads as rainbow |
 | `enableSensorHighlight` | Boolean | `false` | — | **33+** Specular follows device tilt (gravity sensor) |
 | `enableAdaptiveTint` | Boolean | `false` | — | **33+** Tint adapts to backdrop luminance |
@@ -286,7 +301,8 @@ Declared under the `LiquidGlassView` styleable, namespace `app`:
 
 `displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `elasticity` ·
 `cornerRadius` (dimension) · `glassMaterial` (`regular` | `clear`) · `bevelWidth` (dimension) ·
-`refractionHeight` (dimension) · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
+`refractionHeight` (dimension) · `refractionFalloff` (float 0–4) · `refractionNoFold` · `refractionOutward` ·
+`adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
 `glassTint` (color) · `glassTintStrength` (float 0–1, overrides the alpha in `glassTint`) ·
 `backdropSourceId` (reference — id of the backdrop view; omit for the direct parent)
 
@@ -317,16 +333,19 @@ Exact spelling — invented constants are the usual cause of a failed build.
 
 #### Ready-made widgets
 
-All three are `LiquidGlassView` subclasses — every glass property above still applies, and
-`setOnClickListener` works out of the box. With `enableAdaptiveTint = true` their foreground
-(text / icon / indicator) automatically flips between light and dark to match the backdrop,
-until you set an explicit color.
+The button, FAB, tab bar and list item are `LiquidGlassView` subclasses — every glass
+property above still applies, and `setOnClickListener` works out of the box. With
+`enableAdaptiveTint = true` their foreground (text / icon / indicator) automatically flips
+between light and dark to match the backdrop, until you set an explicit color.
 
 | Widget | Notes |
 |---|---|
 | `LiquidGlassButton` | Pill glass button with a centered label. XML: `android:text`, `android:textSize`, `android:textColor`. Kotlin: `text`, `setTextColor(color)`, `textView` |
 | `LiquidGlassFab` | Circular 56dp floating button with a centered icon. XML: `android:src`, `app:glassIconTint`. Kotlin: `icon`, `setIconResource(id)`, `setIconTint(color)`, `imageView` |
 | `LiquidGlassTabBar` | iOS 26-style tab bar: icon-over-label tabs, selection indicator is a real glass droplet that refracts the content under it, slides with liquid stretch and is finger-draggable. Kotlin: `setTabs(List<TabItem>)` / `setTabs(titles)`, `selectedIndex`, `onTabSelected`, `selectedTintColor`. XML: `app:glassTabEntries` (text-only) |
+| `LiquidGlassListItem` | Material 3 list item: leading icon, headline, supporting text, trailing text / icon, 56dp / 72dp min height. `position` (`SINGLE` / `FIRST` / `MIDDLE` / `LAST`) decides which corners round and which edges are flat, so stacked rows read as one panel. `expandedView` gives tap-to-expand with an animated height change. XML: `app:glassHeadline`, `app:glassSupportingText`, `app:glassLeadingIcon`, `app:glassTrailingIcon`, `app:glassTrailingText`, `app:glassListPosition`, `app:glassGroupCornerRadius`, `app:glassInnerCornerRadius`. Kotlin: `headline`, `supportingText`, `leadingIcon`, `trailingIcon`, `trailingText`, `position`, `expandedView`, `setExpanded()`, `applyGroupPositions(items)`, `positionFor(index, count)` for RecyclerView adapters |
+| `LiquidGlassListGroup` | Vertical `LinearLayout` for list items with two layouts: `MERGED` (rows share flat edges, only the group outline refracts) and `SEPARATED` (each row is its own rounded card with `itemSpacing` between). Positions are reassigned as children come and go, and `backdropSource` / `enableDynamicBackground` are pushed to every row. XML: `app:glassListStyle`, `app:glassItemSpacing`, `app:cornerRadius`, `app:backdropSourceId`. Kotlin: `style`, `itemSpacing`, `cornerRadius`, `backdropSource`, `enableDynamicBackground`, `applyPositions()` |
+| `LiquidGlassToast` | Toast-shaped glass message drawn **inside the activity window** rather than in a `Toast` window, so it refracts the screen beneath it and is unaffected by the API 30 custom-toast deprecation. `makeText(context, text, duration).show()`; `LENGTH_SHORT` / `LENGTH_LONG` equal `Toast`'s. `setIcon(drawable)` / `setIconResource(id)`, `setIconTintEnabled(false)` for full-colour icons, `setGravity(gravity, xOffset, yOffset)`, `durationMillis`, `setTextColor(color)`, `cancel()`, `cancelCurrent()`. Exposes `glass`, `textView`, `imageView`. Needs an Activity context; one toast at a time, a new `show()` replaces the previous one |
 | `LiquidGlassDialogBuilder` | `MaterialAlertDialogBuilder` whose whole panel is wrapped in a `LiquidGlassView`. Backdrop is captured from the activity behind, title/message/buttons follow the adaptive light-dark switch. Kotlin: `cornerRadiusDp`, `glassBlurAmount`, `animateShow`, `dimBehind`, `glassSetup`, `glass`, `dismissAnimated()`. Java: `configureGlass(GlassConfigurator)` is the SAM-friendly stand-in for `glassSetup`; `overLightTextColor` / `overDarkTextColor` override the adaptive text colours. Requires the app to depend on appcompat + material (the library keeps them `compileOnly`) |
 
 See [docs/LIQUID_GLASS_V2.md](docs/LIQUID_GLASS_V2.md) for the full lens-pipeline documentation.
@@ -352,7 +371,7 @@ repaints the glass automatically. Note that glass inside a `ScrollView` scrollin
 content sees a fixed backdrop by definition — that's physically correct, not a bug.
 
 **Can I put glass in a `Dialog` / `BottomSheetDialog` / `PopupWindow`?**
-Yes — the demo app's **Sheet** scene is a working `BottomSheetDialog`. Three things differ
+Yes — the demo app's **Overlays** scene is a working `BottomSheetDialog`. Three things differ
 from the in-activity case:
 
 1. **The backdrop must be `backdropSource`.** A dialog has its own window, so the glass's
@@ -406,7 +425,7 @@ On a 2024-class device the AGSL pipeline runs the lens in well under 1 ms per fr
 **Why is the artifact `com.github.QWEA0:liquidglass`?**
 The `:liquidglass` module publishes under the group `com.github.QWEA0`, so that is the
 coordinate JitPack serves. JitPack also aliases the same AAR as
-`com.github.QWEA0:Liquid-Glass-Android:v2.0.8` — either resolves to the library. The
+`com.github.QWEA0:Liquid-Glass-Android:v2.0.9` — either resolves to the library. The
 multi-module form `com.github.QWEA0.Liquid-Glass-Android:liquidglass` does **not** exist.
 
 ### 🏗️ Architecture
@@ -418,7 +437,9 @@ multi-module form `com.github.QWEA0.Liquid-Glass-Android:liquidglass` does **not
 - `LightSourceController` - Gravity-sensor world-fixed light source for specular highlights
 - `BackdropLuminanceMeter` - Backdrop brightness sampling for adaptive tint
 - `ScrollEdgeBlurView` - Progressive blur overlay (scroll edge effect)
-- `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` - Ready-made widgets built on `LiquidGlassView`
+- `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassListItem` - Ready-made widgets built on `LiquidGlassView`
+- `LiquidGlassListGroup` - Container for list items: merged panel or separated cards, positions assigned automatically
+- `LiquidGlassToast` - Glass toast drawn inside the activity window
 - `LiquidGlassDialogBuilder` - Material dialog builder that wraps the dialog panel in glass
 - `GlassAccessibility` - Reduce-transparency / reduce-motion / battery-saver detection
 - `EnhancedBlurEffect` - Multi-algorithm blur engine (Box, IIR Gaussian, Downsample)
@@ -531,7 +552,7 @@ Inspired by the glassmorphism design trend and liquid-glass-react library.
 - **⚡ 高性能** - 使用原生 C++ (NEON SIMD) 和智能缓存优化
 - **🎯 易于集成** - 简单的 XML 属性和 Kotlin API
 - **🔧 高度可定制** - 精细调节玻璃效果的每个方面
-- **🧩 现成小部件** - `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassDialogBuilder`：预置点击派发与前景自适应配色的玻璃按钮、悬浮按钮、标签条和 Material 弹窗
+- **🧩 现成小部件** - `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassListItem` + `LiquidGlassListGroup` / `LiquidGlassToast` / `LiquidGlassDialogBuilder`：预置点击派发与前景自适应配色的玻璃按钮、悬浮按钮、标签条、M3 列表（合并面板或分离卡片）、Toast 和 Material 弹窗
 
 完整透镜管线文档见 [docs/LIQUID_GLASS_V2.md](docs/LIQUID_GLASS_V2.md)。
 
@@ -554,10 +575,17 @@ Inspired by the glassmorphism design trend and liquid-glass-react library.
 
 </div>
 
-跑 sample app 可以看到完整调参场（4 个场景 + 实时参数抽屉），或者直接启动首屏用的 hero 场景：
+跑 sample app 可以看到完整调参场（9 个场景 + 实时参数抽屉），或者直接启动首屏用的 hero 场景：
 
 ```bash
 adb shell am start -n com.example.liquidglass/com.example.liquidglass.HeroShowcaseActivity
+```
+
+**控制中心**场景是按 iOS 26 控制中心截图逐像素量出来的复刻：从桌面往下拉开、往上滑收起，点网络模块展开二级页，
+滑杆能拖、按钮能切换，方便和真机并排只比玻璃本身。这个场景会藏起 demo 控件和系统栏，点右上角的电源图标切回。
+
+```bash
+adb shell am start -n com.example.liquidglass/com.example.liquidglass.ProfessionalDemoActivity --es scene control_center
 ```
 
 ### 📦 安装（JitPack）
@@ -578,7 +606,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.QWEA0:liquidglass:v2.0.8")
+    implementation("com.github.QWEA0:liquidglass:v2.0.9")
 }
 ```
 
@@ -613,8 +641,8 @@ dependencies {
         android:layout_gravity="center"
         app:cornerRadius="999dp"
         app:glassMaterial="regular"
-        app:refractionHeight="66dp"
-        app:bevelWidth="14dp"
+        app:refractionHeight="12dp"
+        app:bevelWidth="24dp"
         app:dispersionStrength="0.12"
         app:sensorHighlight="true"
         app:adaptiveTint="true">
@@ -658,8 +686,9 @@ class MainActivity : AppCompatActivity() {
 ```kotlin
 // --- Liquid Glass 2.0 透镜管线（API 33+，低版本静默降级，不抛异常）---
 glass.material = GlassMaterial.REGULAR      // REGULAR 重可读性 | CLEAR 覆盖媒体内容
-glass.refractionHeight = 200f               // 主控旋钮：透镜强度。px，0-300
-glass.bevelWidth = 40f                      // 玻璃"厚度"带宽度。px，2-200
+glass.refractionHeight = 160f               // 贴边处的折射位移。px
+glass.bevelWidth = 48f                      // 玻璃"厚度"带宽度。px，2-200
+glass.refractionFalloff = 2f                // 逆幂衰减指数：>0 弯折压在贴边，0 = 平方斜面
 glass.dispersionStrength = 0.10f            // 边缘色散，0-1。超过 0.25 会像彩虹而不像玻璃
 glass.enableSensorHighlight = true          // 高光跟随设备倾斜
 glass.enableAdaptiveTint = true             // 染色跟随背景明暗
@@ -694,8 +723,12 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 | `enableDynamicBackground` | Boolean | `false` | — | 背景或玻璃会动时**必须设为 `true`**，否则背景只捕获一次 |
 | `cornerRadius` | Float | `999f` | px | `999f` = 药丸形。SDF 跟随此值，折射随圆角变化 |
 | `material` | `GlassMaterial` | `REGULAR` | — | **33+** `REGULAR` 重可读性 · `CLEAR` 覆盖媒体 |
-| `refractionHeight` | Float | `200f` | 0–300 px | **33+** 透镜强度主控旋钮 |
-| `bevelWidth` | Float | `40f` | 2–200 px | **33+** 边缘"厚度"带宽度 |
+| `refractionHeight` | Float | `160f` | 0–300 px | **33+** 贴边处采样点往内走的距离。位移沿 `refractionFalloff` 决定的剖面往内衰减 |
+| `bevelWidth` | Float | `48f` | 2–200 px | **33+** 边缘"厚度"带宽度，折射和高光都落在这一圈里 |
+| `refractionFalloff` | Float | `2f` | 0–4 | **33+** 引力透镜式逆幂衰减指数：位移 ∝ (1 + x/k)^-p，k = `bevelWidth / 4`，带末端归零。越贴边弯折越剧烈——p = 2 时离边 k 处只剩 1/4，折返压成贴边一圈细而密的压缩环，内侧只留轻微放大的尾巴；指数越大环越细。`0` = 旧的平方斜面剖面，弯折沿整条带均匀铺开 |
+| `refractionNoFold` | Boolean | `false` | — | **33+** `true` 把位移钳在剖面单调的上限以内（平方斜面为 `bevelWidth / 2`，逆幂剖面更小）：边缘附近的内容只被拉伸到边上。默认 `false` 允许采样折返，贴边那圈压缩镜像环就来自这里 |
+| `adaptiveLensScale` | Boolean | `true` | — | **33+** 按形状短边钳 `bevelWidth`、`refractionHeight` 和高光 / 内阴影带宽度（折射在 110dp 以下按平方收，48dp 的按钮约 38px），小控件不再整块都是边缘带；短边 110dp 以上的面板在默认值下不受影响 |
+| `refractionOutward` | Boolean | `false` | — | **33+** 可选的凸透镜模式。`false`（默认，与 iOS 一致）向内采样，边缘是内侧内容的压缩镜像；`true` **向外**采样，形状外的内容还没进到玻璃下面就先被弯进边缘，进来之后沿边缘延展 |
 | `dispersionStrength` | Float | `0.10f` | 0–1 | **33+** 边缘色散。超过 0.25 会像彩虹 |
 | `enableSensorHighlight` | Boolean | `false` | — | **33+** 高光跟随重力传感器 |
 | `enableAdaptiveTint` | Boolean | `false` | — | **33+** 染色跟随背景亮度 |
@@ -730,7 +763,8 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 
 `displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `elasticity` ·
 `cornerRadius`（dimension） · `glassMaterial`（`regular` | `clear`） · `bevelWidth`（dimension） ·
-`refractionHeight`（dimension） · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
+`refractionHeight`（dimension） · `refractionFalloff`（float 0–4） · `refractionNoFold` · `refractionOutward` ·
+`adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
 `glassTint`（color） · `glassTintStrength`（float 0–1，覆盖 `glassTint` 里的 alpha） ·
 `backdropSourceId`（reference —— 背景来源视图的 id，不填 = 直接父容器）
 
@@ -760,15 +794,18 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 
 #### 现成小部件
 
-三个都是 `LiquidGlassView` 的子类——上面所有玻璃属性照常可用，`setOnClickListener`
-开箱即响。开启 `enableAdaptiveTint = true` 后前景（文字/图标/指示）会跟随背景明暗
-自动切换深浅色，显式设置过颜色则不再自动切换。
+按钮、悬浮按钮、标签条和列表项都是 `LiquidGlassView` 的子类——上面所有玻璃属性照常可用，
+`setOnClickListener` 开箱即响。开启 `enableAdaptiveTint = true` 后前景（文字/图标/指示）
+会跟随背景明暗自动切换深浅色，显式设置过颜色则不再自动切换。
 
 | 小部件 | 说明 |
 |---|---|
 | `LiquidGlassButton` | 胶囊玻璃按钮，居中文字。XML：`android:text`、`android:textSize`、`android:textColor`。Kotlin：`text`、`setTextColor(color)`、`textView` |
 | `LiquidGlassFab` | 圆形 56dp 悬浮按钮，居中图标。XML：`android:src`、`app:glassIconTint`。Kotlin：`icon`、`setIconResource(id)`、`setIconTint(color)`、`imageView` |
 | `LiquidGlassTabBar` | iOS 26 风格标签条：图标+小字标签，选中指示是一颗真实玻璃滴（折射下方内容），切换带液态拉伸动画、可手指拖拽吸附。Kotlin：`setTabs(List<TabItem>)` / `setTabs(titles)`、`selectedIndex`、`onTabSelected`、`selectedTintColor`。XML：`app:glassTabEntries`（纯文字） |
+| `LiquidGlassListItem` | Material 3 列表项：前导图标、标题、辅助文字、尾部文字/图标，最小高度 56dp / 72dp。`position`（`SINGLE` / `FIRST` / `MIDDLE` / `LAST`）决定圆哪几个角、哪几条边是平边，几行叠起来就是一块面板。`expandedView` 提供点击展开，高度带动画。XML：`app:glassHeadline`、`app:glassSupportingText`、`app:glassLeadingIcon`、`app:glassTrailingIcon`、`app:glassTrailingText`、`app:glassListPosition`、`app:glassGroupCornerRadius`、`app:glassInnerCornerRadius`。Kotlin：`headline`、`supportingText`、`leadingIcon`、`trailingIcon`、`trailingText`、`position`、`expandedView`、`setExpanded()`、`applyGroupPositions(items)`、`positionFor(index, count)`（给 RecyclerView 适配器用） |
+| `LiquidGlassListGroup` | 装列表项的竖向 `LinearLayout`，两种排布：`MERGED`（行贴边拼成一块，只有组外沿有透镜边缘）和 `SEPARATED`（每行独立圆角卡片，行间留 `itemSpacing`）。子项增减时自动重新分配位置，`backdropSource` / `enableDynamicBackground` 下发到每一行。XML：`app:glassListStyle`、`app:glassItemSpacing`、`app:cornerRadius`、`app:backdropSourceId`。Kotlin：`style`、`itemSpacing`、`cornerRadius`、`backdropSource`、`enableDynamicBackground`、`applyPositions()` |
+| `LiquidGlassToast` | Toast 形状的玻璃消息条，**画在 Activity 的 window 里**而不是 `Toast` window，所以能折射底下的界面，也不受 API 30 自定义 Toast 废弃的影响。`makeText(context, text, duration).show()`；`LENGTH_SHORT` / `LENGTH_LONG` 与 `Toast` 相同。`setIcon(drawable)` / `setIconResource(id)`、彩色图标用 `setIconTintEnabled(false)`、`setGravity(gravity, xOffset, yOffset)`、`durationMillis`、`setTextColor(color)`、`cancel()`、`cancelCurrent()`。暴露 `glass`、`textView`、`imageView`。需要 Activity 的 Context；同时只显示一条，再次 `show()` 顶掉上一条 |
 | `LiquidGlassDialogBuilder` | 把 `MaterialAlertDialogBuilder` 的整个面板套进 `LiquidGlassView`。背景从后面的 Activity 采，标题/正文/按钮跟随明暗自适应切换。Kotlin：`cornerRadiusDp`、`glassBlurAmount`、`animateShow`、`dimBehind`、`glassSetup`、`glass`、`dismissAnimated()`。Java：`configureGlass(GlassConfigurator)` 是 `glassSetup` 的 SAM 接口版本；`overLightTextColor` / `overDarkTextColor` 可覆盖自适应文字色。使用方需自行依赖 appcompat + material（库里是 `compileOnly`） |
 
 完整透镜管线文档见 [docs/LIQUID_GLASS_V2.md](docs/LIQUID_GLASS_V2.md)。
@@ -833,7 +870,7 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 
 **为什么依赖坐标是 `com.github.QWEA0:liquidglass`？**
 `:liquidglass` 模块以 `com.github.QWEA0` 为 group 发布，JitPack 对外提供的就是这个坐标。
-同一个 AAR 还有一份别名 `com.github.QWEA0:Liquid-Glass-Android:v2.0.8`，两者等价。
+同一个 AAR 还有一份别名 `com.github.QWEA0:Liquid-Glass-Android:v2.0.9`，两者等价。
 多模块写法 `com.github.QWEA0.Liquid-Glass-Android:liquidglass` **不存在**。
 
 ### 🏗️ 架构
@@ -845,7 +882,9 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 - `LightSourceController` - 重力传感器世界光源（镜面高光方向）
 - `BackdropLuminanceMeter` - 背景亮度采样（自适应染色数据源）
 - `ScrollEdgeBlurView` - 渐进模糊覆盖层（Scroll Edge Effect）
-- `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` - 基于 `LiquidGlassView` 的现成小部件
+- `LiquidGlassButton` / `LiquidGlassFab` / `LiquidGlassTabBar` / `LiquidGlassListItem` - 基于 `LiquidGlassView` 的现成小部件
+- `LiquidGlassListGroup` - 列表项容器：合并面板或分离卡片，位置自动分配
+- `LiquidGlassToast` - 画在 Activity window 里的玻璃 Toast
 - `LiquidGlassDialogBuilder` - 把弹窗面板套进玻璃的 Material 弹窗构建器
 - `GlassAccessibility` - 降低透明度/减弱动效/省电模式检测
 - `EnhancedBlurEffect` - 多算法模糊引擎（Box、IIR 高斯、降采样）

@@ -86,6 +86,8 @@
     <!-- Background & Language Section -->
     <string name="section_background_language">Background &amp; Language</string>
     <string name="button_change_background">Change Background Image</string>
+    <string name="button_open_github">Open on GitHub</string>
+    <string name="github_star_button">★ Star on GitHub</string>
     <string name="button_language_chinese">切换到中文</string>
     <string name="button_language_english">Switch to English</string>
     <string name="current_language">Current Language: English</string>
@@ -143,10 +145,10 @@
     <string name="optimized_capture_desc">• Enabled: Capture only rounded corner area, reduce rendering\n• Disabled: Capture full rectangular area\n\nUse cases: Rounded buttons, rounded cards\nPerformance gain: ~5-8%</string>
 
     <!-- Demo Scenes -->
-    <string name="scene_scroll">Scroll</string>
-    <string name="scene_image">Image</string>
-    <string name="scene_animated">Animated</string>
-    <string name="scene_showcase">Showcase</string>
+    <string name="scene_playground">Playground</string>
+    <string name="playground_bg_gradient">Gradient</string>
+    <string name="playground_bg_image">Image</string>
+    <string name="playground_bg_animated">Animated</string>
 
     <!-- Modern Panel -->
     <string name="section_glass_params">Glass Parameters (GPU + CPU)</string>
@@ -174,18 +176,22 @@
     <!-- Liquid Glass 2.0 (Lens Pipeline) -->
     <string name="scene_merge">Merge</string>
     <string name="scene_home">Home</string>
+    <string name="scene_control_center">Control Center</string>
+    <string name="cc_hint">Pull down to open Control Center, swipe up to close it. Tap the power icon for the demo controls.</string>
     <string name="scene_list">List</string>
     <string name="scene_text">Text</string>
     <string name="text_scene_hint">Type anything — it becomes glass</string>
     <string name="text_scene_apply">Apply</string>
     <string name="text_scene_default">Liquid</string>
-    <string name="scene_sheet">Sheet</string>
+    <string name="scene_overlays">Overlays</string>
     <string name="sheet_open">Open bottom sheet</string>
     <string name="sheet_title">Glass in a separate window</string>
     <string name="sheet_body">The sheet has its own window, so the backdrop comes from the activity content view via backdropSource.</string>
     <string name="sheet_dialog_open">Open glass dialog</string>
     <string name="sheet_dialog_title">Liquid Glass Dialog</string>
     <string name="sheet_dialog_body">A Material dialog whose whole panel sits inside a LiquidGlassView.</string>
+    <string name="sheet_toast_open">Show glass toast</string>
+    <string name="sheet_toast_text">Glass toast · drawn inside the activity window</string>
     <string name="simulate_api_label">Simulate API Level</string>
     <string name="api_cap_device">Device</string>
     <string name="simulate_api_desc">Clamps the pipeline tier to preview older devices: 36+ AGSL color filter/blend extras · 33–35 lens · 31–32 classic GPU · ≤30 CPU. The overlay shows real → effective API.</string>
@@ -198,9 +204,13 @@
     <string name="material_clear">Clear</string>
     <string name="switch_sensor_highlight">Sensor-Driven Highlight</string>
     <string name="switch_adaptive_tint">Adaptive Luminance Tint</string>
+    <string name="switch_refraction_no_fold">No-fold Refraction (iOS-like stretch)</string>
+    <string name="switch_refraction_outward">Outward Refraction (convex lens)</string>
+    <string name="switch_adaptive_lens_scale">Adaptive Lens Scale (small controls)</string>
     <string name="lens_bevel">Bevel Width: %.0f px</string>
     <string name="lens_refraction">Refraction: %.0f px</string>
     <string name="lens_dispersion">Dispersion: %.2f</string>
+    <string name="lens_falloff">Refraction Falloff (inverse power): %.1f</string>
     <string name="switch_a11y_opaque">Accessibility Opaque Fallback</string>
     <string name="merge_hint">Drag the bubble near the capsule — edges merge like liquid</string>
     <string name="text_param_title">Text Style</string>
@@ -215,8 +225,6 @@
     <string name="param_tint">Tint alpha</string>
     <string name="param_tint_light">Tint: light (tap to toggle)</string>
     <string name="param_tint_dark">Tint: dark (tap to toggle)</string>
-    <string name="showcase_navbar">🧭  Liquid NavBar</string>
-    <string name="showcase_card">💳  Glass Card\nBlur · Aberration · Highlight</string>
 
     <!-- Widgets Scene (ready-made components) -->
     <string name="scene_widgets">Widgets</string>
@@ -229,9 +237,11 @@
     <string name="widgets_toast_tab">Tab: %1$s</string>
     <string name="widgets_toast_fab">FAB clicked</string>
 
-    <!-- Group Scene (M3 grouped list items) -->
-    <string name="scene_group">Group</string>
-    <string name="group_hint">Each row is its own glass view. Position picks which corners round.</string>
+    <!-- List Scene (M3 list items, merged / separated) -->
+    <string name="group_style_merged">Merged</string>
+    <string name="group_style_separated">Separated</string>
+    <string name="group_hint_merged">Merged: rows share flat edges, only the group outline refracts.</string>
+    <string name="group_hint_separated">Separated: every row is its own rounded card with a gap between.</string>
     <string name="group_wifi_title">Wi‑Fi</string>
     <string name="group_wifi_sub">Connected · Home 5G</string>
     <string name="group_bt_title">Bluetooth</string>
@@ -247,12 +257,10 @@
     <string name="group_notif_detail">Muted: Mail, Slack, Weather\nDo Not Disturb: 23:00 – 07:00</string>
     <string name="group_display_detail">Brightness follows ambient light.\nRefresh rate: Smooth (up to 90 Hz)</string>
 
-    <!-- Tint Scene (coloured glass) -->
-    <string name="scene_tint">Tint</string>
-    <string name="tint_scene_hint">Pick a colour, drag the strength — that is one glassTint call.</string>
+    <!-- Glass Tint (drawer card) -->
+    <string name="section_glass_tint">Glass Tint</string>
     <string name="tint_readout">%1$s · %2$s · %3$d%%</string>
     <string name="tint_readout_none">No tint · glassTint = 0</string>
-    <string name="tint_preset_hint">Fixed-tint glass buttons — tap one to copy its colour</string>
     <string name="tint_none">None</string>
     <string name="tint_blue">Blue</string>
     <string name="tint_cyan">Cyan</string>
@@ -263,8 +271,11 @@
     <string name="tint_pink">Pink</string>
     <string name="tint_purple">Purple</string>
 
-    <!-- Nested Scene (cross-level ancestor backdrop) -->
-    <string name="scene_nested">Nested</string>
-    <string name="nested_hint">Glass sits two containers deep; backdropSource points at the scene root.</string>
+    <!-- Backdrop Scene (backdropSource topologies) -->
+    <string name="scene_backdrop">Backdrop</string>
+    <string name="backdrop_mode_sibling">Sibling</string>
+    <string name="backdrop_mode_ancestor">Ancestor</string>
+    <string name="backdrop_hint_sibling">Glass sits in a transparent host beside the list; backdropSource points at the list content.</string>
+    <string name="backdrop_hint_ancestor">Glass sits two containers deep; backdropSource points at the scene root.</string>
 </resources>
 
