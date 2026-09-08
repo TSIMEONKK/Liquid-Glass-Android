@@ -72,6 +72,7 @@ internal class GlassLensRenderer {
             uniform float  dispersion;
             uniform float2 lightDir;
             uniform float  specStrength;
+            uniform float  edgeLightingMode;
             uniform float  innerShadow;
             uniform float  rimBandMax;   // 贴边高光带宽度上限（px，小控件按短边收）
             uniform float  shadowMax;    // 内阴影带宽度上限（px，小控件按短边收）
@@ -250,34 +251,37 @@ internal class GlassLensRenderer {
                     col = mix(col, clamp(absorbed + scattered, float3(0.0), float3(1.0)), glassTint.a);
                 }
 
-                // 光照：同一法线场驱动。整圈轮廓的明暗只由 dot(N, -L) 决定，
-                // 没有与方向无关的常亮项——侧向（法线垂直于光线处）亮度归零，不会
-                // 留下一圈固定描边。两个角度瓣：迎光侧主瓣（pow 2.5 铺开成连续斜面
-                // 渐变，叠一个 pow 8 的收紧核保留正对光源处的亮点，避免大斜面时出现
-                // 大面积泛白光斑）+ 背光侧的弱回光瓣（透明介质的内壁反射：iOS 玻璃
-                // 右下角那道弱一截的亮边，没有它背光半圈在深色背景上会整段消失）
+                // 光照有两种模式：iOS 平衡模式让相反法线得到相同的对角白边；物理模式
+                // 保留旧的单向主光与背光弱回光。两者均无方向无关的常亮项，侧向不会
+                // 出现一整圈固定描边。
                 float facing = dot(n, -lightDir);
                 float facingPos = max(facing, 0.0);
                 float facingNeg = max(-facing, 0.0);
+                float physicalMode = step(0.5, edgeLightingMode);
 
                 // 贴边窄带（宽度与斜面弱相关，上限默认 9px、小控件按短边收）+ 最外层 1px 发丝带
                 float bandW = clamp(bevel * 0.3, 2.0, rimBandMax);
                 float rim = clamp(1.0 - (-d - 0.5) / bandW, 0.0, 1.0) * cov;
                 float hair = clamp(1.0 - abs(d + 1.0) / 1.5, 0.0, 1.0) * cov;
-                float lobe = pow(facingPos, 2.5);
+                float iosLobe = pow(abs(facing), 2.5);
+                float physicalLobe = pow(facingPos, 2.5);
                 float back = pow(facingNeg, 2.5);
-                float spec = (rim * (0.34 * lobe + 0.22 * pow(facingPos, 8.0) + 0.15 * back)
-                              + hair * (0.34 * lobe + 0.15 * back))
+                float iosSpec = rim * (0.34 * iosLobe + 0.12 * pow(abs(facing), 8.0))
+                                + hair * 0.34 * iosLobe;
+                float physicalSpec = rim * (0.34 * physicalLobe + 0.22 * pow(facingPos, 8.0) + 0.15 * back)
+                                     + hair * (0.34 * physicalLobe + 0.15 * back);
+                float spec = mix(iosSpec, physicalSpec, physicalMode)
                              * specStrength * (1.0 - 0.35 * press);
                 col += float3(spec);
 
-                // 内阴影：背光侧边缘内部微暗（宽度独立于斜面，上限默认 28px、小控件按短边收）。
-                // 暗带落在回光亮边的内侧：背光侧是"细亮边 → 内侧暗带"，迎光侧是"亮边 → 亮渐变"，
-                // 整圈轮廓因此是"迎光渐亮 → 侧向消隐 → 背光弱亮 + 内阴影"的连续过渡
+                // 阴影始终落在白边内侧。iOS 平衡模式使用更弱的对称阴影，避免任一对角
+                // 被压黑；物理模式维持原有背光侧阴影。
                 float shadowW = clamp(bevel, 4.0, shadowMax);
                 float shadowBand = pow(clamp(1.0 + d / shadowW, 0.0, 1.0), 1.5);
-                float ish = shadowBand * facingNeg * innerShadow;
-                col = col * (1.0 - 0.45 * ish);
+                float iosShadow = shadowBand * iosLobe * innerShadow;
+                float physicalShadow = shadowBand * facingNeg * innerShadow;
+                float shadowStrength = mix(0.18 * iosShadow, 0.45 * physicalShadow, physicalMode);
+                col = col * clamp(1.0 - shadowStrength, 0.0, 1.0);
 
                 col = clamp(col, float3(0.0), float3(1.0));
                 return half4(half3(col * cov), half(cov));
@@ -310,6 +314,7 @@ internal class GlassLensRenderer {
         val dispersion: Float,
         val lightX: Float, val lightY: Float,
         val spec: Float,
+        val edgeLightingMode: EdgeLightingMode,
         val innerShadow: Float,
         val tint: Int,          // straight-alpha ARGB（adaptiveTint 时被忽略）
         val adaptiveTint: Boolean, // 逐像素自适应染色（Regular + enableAdaptiveTint）
@@ -538,6 +543,7 @@ internal class GlassLensRenderer {
         sh.setFloatUniform("dispersion", p.dispersion)
         sh.setFloatUniform("lightDir", p.lightX, p.lightY)
         sh.setFloatUniform("specStrength", p.spec)
+        sh.setFloatUniform("edgeLightingMode", p.edgeLightingMode.shaderValue)
         sh.setFloatUniform("innerShadow", p.innerShadow)
         sh.setFloatUniform("rimBandMax", p.rimBandMax)
         sh.setFloatUniform("shadowMax", p.shadowMax)

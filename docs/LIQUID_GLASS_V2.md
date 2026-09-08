@@ -71,9 +71,10 @@ backdrop 录制（带 margin 外扩）
 | `refractionFalloff` | 2 | 折射衰减指数（0-4）：> 0 逆幂剖面，弯折压在贴边成细密的压缩环，越大环越细；0 = 平方斜面 |
 | `refractionNoFold` | false | true 时折射单调不翻折：贴边放大率最高、往内降到 1，边缘只放大延展；默认允许折返成压缩镜像环 |
 | `refractionOutward` | false | 可选的凸透镜模式：true 向外采样（形状外的背景弯进边缘）；默认向内压缩镜像，与 iOS 一致 |
+| `edgeLightingMode` | IOS_BALANCED | 边缘光照风格：IOS_BALANCED 让左上 / 右下对角白边等强；PHYSICAL 保留单向主光、弱回光与背光侧内阴影 |
 | `adaptiveLensScale` | true | 斜面 / 折射 / 高光带 / 内阴影带按形状短边钳，小控件不再整块都是边缘带 |
 | `dispersionStrength` | 0.10 | 色散强度（与色差/色散开关及其滑杆联动） |
-| `enableSensorHighlight` | false | 高光跟随重力传感器（光源固定在世界坐标）；关闭时用固定的左上光源 |
+| `enableSensorHighlight` | false | 高光跟随重力传感器；IOS_BALANCED 下两条对角白边同步移动且强度保持一致 |
 | `enableAdaptiveTint` | false | 背景亮度自适应染色（透镜管线逐像素；亮度计仍供 `glassAppearanceListener` 使用） |
 | `glassAppearanceListener` | null | `(isOverLight) -> Unit`，背景明暗翻转回调（联动前景文字色） |
 | `isOverLightBackground` | — | 当前明暗判定（只读） |

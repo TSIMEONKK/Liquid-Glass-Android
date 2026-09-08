@@ -517,6 +517,19 @@ open class LiquidGlassView @JvmOverloads constructor(
             }
         }
 
+    /**
+     * 边缘光照风格（仅 API 33+ 透镜管线）。默认 [EdgeLightingMode.IOS_BALANCED]，
+     * 让左上与右下显示等强白色折射边；设为 [EdgeLightingMode.PHYSICAL] 可恢复
+     * 先前的单向主光与背光侧内阴影。
+     */
+    var edgeLightingMode = EdgeLightingMode.IOS_BALANCED
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
     /** 边缘斜面带宽度（px）：玻璃"厚度"的视觉宽度，折射和高光都落在这一圈里（仅透镜管线） */
     var bevelWidth = 48f
         set(value) {
@@ -1111,6 +1124,11 @@ open class LiquidGlassView @JvmOverloads constructor(
             refractionHeight = ta.getDimension(R.styleable.LiquidGlassView_refractionHeight, refractionHeight)
             dispersionStrength = ta.getFloat(R.styleable.LiquidGlassView_dispersionStrength, dispersionStrength)
             edgeSoftness = ta.getDimension(R.styleable.LiquidGlassView_edgeSoftness, edgeSoftness)
+            edgeLightingMode = if (ta.getInt(R.styleable.LiquidGlassView_edgeLightingMode, 0) == 1) {
+                EdgeLightingMode.PHYSICAL
+            } else {
+                EdgeLightingMode.IOS_BALANCED
+            }
             enableSensorHighlight = ta.getBoolean(R.styleable.LiquidGlassView_sensorHighlight, enableSensorHighlight)
             enableAdaptiveTint = ta.getBoolean(R.styleable.LiquidGlassView_adaptiveTint, enableAdaptiveTint)
             adaptiveLensScale = ta.getBoolean(R.styleable.LiquidGlassView_adaptiveLensScale, adaptiveLensScale)
@@ -1611,12 +1629,18 @@ open class LiquidGlassView @JvmOverloads constructor(
         val spec = if (enableEdgeHighlight) (edgeHighlightOpacity / 100f) * material.specBoost else 0f
 
         // —— 光源方向（量化到 0.005，避免静止时反复重建 effect） ——
+        // 两种边缘光照模式都可跟随重力。IOS_BALANCED 在着色器里对相反法线使用
+        // 同一强度，因此光轴移动时两条对角白边会同步移动，仍然保持平衡。
         val sensorActive = enableSensorHighlight && !a11yReducedMotion && !a11yPowerSave
         val lx: Float
         val ly: Float
         if (sensorActive) {
             lx = (LightSourceController.lightDirX * 200f).toInt() / 200f
             ly = (LightSourceController.lightDirY * 200f).toInt() / 200f
+        } else if (edgeLightingMode == EdgeLightingMode.IOS_BALANCED) {
+            // 与 Android 12 及以下的 135° 边框渐变对齐：左上和右下是同一条白边轴。
+            lx = LightSourceController.IOS_BALANCED_X
+            ly = LightSourceController.IOS_BALANCED_Y
         } else {
             lx = LightSourceController.DEFAULT_X
             ly = LightSourceController.DEFAULT_Y
@@ -1661,6 +1685,7 @@ open class LiquidGlassView @JvmOverloads constructor(
             dispersion = disp,
             lightX = lx, lightY = ly,
             spec = spec,
+            edgeLightingMode = edgeLightingMode,
             innerShadow = material.innerShadow,
             tint = if (adaptivePerPixel) 0 else currentTintColor(),
             adaptiveTint = adaptivePerPixel,

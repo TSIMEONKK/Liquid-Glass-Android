@@ -32,6 +32,10 @@ internal object LightSourceController : SensorEventListener {
     internal const val DEFAULT_X = 0.45f
     internal const val DEFAULT_Y = 0.89f
 
+    /** iOS 平衡边缘的固定光轴：与旧边框渐变的左上—右下对角线一致。 */
+    internal const val IOS_BALANCED_X = 0.70710677f
+    internal const val IOS_BALANCED_Y = 0.70710677f
+
     /** 低通滤波系数（SENSOR_DELAY_GAME ≈ 50Hz） */
     private const val SMOOTHING = 0.14f
 

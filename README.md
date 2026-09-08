@@ -267,8 +267,9 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 | `refractionNoFold` | Boolean | `false` | — | **33+** `true` caps the displacement where the profile stays monotonic (`bevelWidth / 2` for the square bevel, less for inverse power): content near the rim is only stretched to the edge. Default `false` lets the sampling fold back, which is what draws the compressed mirror ring at the rim |
 | `adaptiveLensScale` | Boolean | `true` | — | **33+** Caps `bevelWidth`, `refractionHeight` and the rim-highlight / inner-shadow bands by the shape's short side (refraction falls off quadratically below 110dp: a 48dp button gets ~38px), so small controls are not all edge band. Shapes of 110dp and up are unaffected at the defaults |
 | `refractionOutward` | Boolean | `false` | — | **33+** Optional convex-lens mode. `false` (default, matches iOS) samples inward: the rim is a compressed mirror of the interior. `true` samples **outward**: content just outside the shape is bent into the rim before it passes under the glass, and content under the glass stretches along the edge |
+| `edgeLightingMode` | `EdgeLightingMode` | `IOS_BALANCED` | — | **33+** `IOS_BALANCED` draws equally bright white refraction rims on the top-left / bottom-right diagonal; `PHYSICAL` restores the previous one-way key light with weaker back-lighting |
 | `dispersionStrength` | Float | `0.10f` | 0–1 | **33+** Rim spectral fringe. Above ~0.25 reads as rainbow |
-| `enableSensorHighlight` | Boolean | `false` | — | **33+** Specular follows device tilt (gravity sensor) |
+| `enableSensorHighlight` | Boolean | `false` | — | **33+** Specular follows device tilt (gravity sensor). `IOS_BALANCED` moves both diagonal white rims together and keeps them equally bright |
 | `enableAdaptiveTint` | Boolean | `false` | — | **33+** Tint adapts to backdrop luminance |
 | `glassTint` | Int (ARGB) | `TRANSPARENT` | — | Colour of the glass itself; the colour's alpha is the strength. `0x33`–`0x66` reads like iOS tinted glass, `0xFF` like stained glass. Works on every pipeline |
 | `useShaderPipeline` | Boolean | `true` | — | `false` forces the classic pipeline even on 33+ |
@@ -729,8 +730,9 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 | `refractionNoFold` | Boolean | `false` | — | **33+** `true` 把位移钳在剖面单调的上限以内（平方斜面为 `bevelWidth / 2`，逆幂剖面更小）：边缘附近的内容只被拉伸到边上。默认 `false` 允许采样折返，贴边那圈压缩镜像环就来自这里 |
 | `adaptiveLensScale` | Boolean | `true` | — | **33+** 按形状短边钳 `bevelWidth`、`refractionHeight` 和高光 / 内阴影带宽度（折射在 110dp 以下按平方收，48dp 的按钮约 38px），小控件不再整块都是边缘带；短边 110dp 以上的面板在默认值下不受影响 |
 | `refractionOutward` | Boolean | `false` | — | **33+** 可选的凸透镜模式。`false`（默认，与 iOS 一致）向内采样，边缘是内侧内容的压缩镜像；`true` **向外**采样，形状外的内容还没进到玻璃下面就先被弯进边缘，进来之后沿边缘延展 |
+| `edgeLightingMode` | `EdgeLightingMode` | `IOS_BALANCED` | — | **33+** `IOS_BALANCED` 让左上 / 右下对角白色折射边等强；`PHYSICAL` 恢复先前的单向主光与较弱回光 |
 | `dispersionStrength` | Float | `0.10f` | 0–1 | **33+** 边缘色散。超过 0.25 会像彩虹 |
-| `enableSensorHighlight` | Boolean | `false` | — | **33+** 高光跟随重力传感器 |
+| `enableSensorHighlight` | Boolean | `false` | — | **33+** 高光跟随重力传感器；`IOS_BALANCED` 下两条对角白边同步移动且强度保持一致 |
 | `enableAdaptiveTint` | Boolean | `false` | — | **33+** 染色跟随背景亮度 |
 | `glassTint` | Int (ARGB) | `TRANSPARENT` | — | 玻璃本体颜色，颜色自带的 alpha 即染色强度。`0x33`–`0x66` 接近 iOS 的彩色玻璃，`0xFF` 是浓重的有色玻璃。全部管线通用 |
 | `useShaderPipeline` | Boolean | `true` | — | 设 `false` 可在 33+ 上强制走经典管线 |
