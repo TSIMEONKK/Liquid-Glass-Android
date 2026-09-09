@@ -57,14 +57,9 @@
         <attr name="dispersionStrength" format="float" />
         <!-- 边缘柔化宽度（透镜管线）：折射压缩带沿法线抹匀，0 = 关 -->
         <attr name="edgeSoftness" format="dimension" />
-        <!-- 边缘光照：iosBalanced = 左上/右下对角双白边；physical = 原有单向主光 -->
-        <attr name="edgeLightingMode" format="enum">
-            <enum name="iosBalanced" value="0" />
-            <enum name="physical" value="1" />
-        </attr>
         <attr name="sensorHighlight" format="boolean" />
         <attr name="adaptiveTint" format="boolean" />
-        <!-- 透镜几何随控件尺寸自适应：斜面 / 折射 / 高光带 / 内阴影带按形状短边钳，默认 true -->
+        <!-- 透镜几何随控件尺寸自适应：斜面 / 折射 / 高光带按形状短边钳，默认 true -->
         <attr name="adaptiveLensScale" format="boolean" />
         <!-- 折射向外采样（可选的凸透镜模式：形状外的背景弯进边缘）；默认 false = 向内压缩镜像，与 iOS 一致 -->
         <attr name="refractionOutward" format="boolean" />

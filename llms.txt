@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.QWEA0:liquidglass:v2.0.9")
+    implementation("com.github.QWEA0:liquidglass:v2.0.10")
 }
 ```
 
@@ -124,8 +124,8 @@ glass.enableDynamicBackground = true   // REQUIRED if the backdrop moves or the 
   records the backdrop with a margin as wide as the refraction reach and renders through
   an offscreen compositing layer.
 - **Small controls are handled automatically.** `adaptiveLensScale` (default `true`, API 33+)
-  caps `bevelWidth`, `refractionHeight` and the rim-highlight / inner-shadow band widths by
-  the shape's short side (bevel ≤ 0.3×, highlight band ≤ 0.05×, shadow band ≤ 0.12×;
+  caps `bevelWidth`, `refractionHeight` and the rim-highlight band width by
+  the shape's short side (bevel ≤ 0.3×, highlight band ≤ 0.05×;
   refraction ≤ 0.7× and, below 110dp, additionally scaled by short side / 110dp, so a
   48dp button gets ~38px instead of 200px). Shapes of 110dp and up never hit the caps at
   the defaults and explicit smaller values are kept, so buttons, FABs and toasts need no
@@ -163,6 +163,12 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   strength passed separately; the alpha carried by `color` is ignored.
 - `LiquidGlassView.glassAppearanceListener: ((isOverLight: Boolean) -> Unit)?` — fires when
   the backdrop luminance flips; use it to switch your foreground text between light and dark.
+- `LiquidGlassView.pressScale: Float` — scale while pressed, default `0.95f`, clamped to
+  0.5–1.5. Below 1 shrinks, above 1 grows like iOS 26 interactive glass. It is a View
+  transform, so it can overflow the layout bounds; a glass flush against its parent's edge
+  needs `clipChildren="false"` on the parent when it grows. `enablePressEffect` (default
+  `true`) switches the whole press feedback off; `elasticity` (default `0.15f`) is the
+  drag stretch.
 - `LiquidGlassView.backdropSource: View?` — which view to capture as the backdrop. `null`
   (default) = the direct parent, so the backdrop must be a sibling. Set it to any view in the
   tree (a RecyclerView the glass floats over, a wallpaper outside the ScrollView) and the

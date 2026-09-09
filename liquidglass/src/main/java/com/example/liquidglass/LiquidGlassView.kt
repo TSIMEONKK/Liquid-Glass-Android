@@ -21,9 +21,6 @@
  *     app:saturation="140"
  *     app:aberrationIntensity="2"
  *     app:elasticity="0.15"
- *     app:pressScale="0.95"
- *     app:pressGlassTint="#0A84FF"
- *     app:pressGlassTintStrength="0.12"
  *     app:cornerRadius="999"
  *     app:glassTint="#0A84FF"
  *     app:glassTintStrength="0.3" />
@@ -54,15 +51,13 @@ open class LiquidGlassView @JvmOverloads constructor(
     companion object {
         private const val TAG = "LiquidGlassView"
 
-        // 透镜几何自适应：各量相对形状短边的上限比例，以及高光带 / 内阴影带的固定上限（px）。
+        // 透镜几何自适应：各量相对形状短边的上限比例，以及高光辉光带的固定上限（px）。
         // 折射的上限在 ADAPTIVE_REF_DP 以下额外乘 (短边 / 参考尺寸)，越小收得越快
         private const val ADAPTIVE_REF_DP = 110f
         private const val ADAPTIVE_BEVEL_RATIO = 0.3f
         private const val ADAPTIVE_REFRACT_RATIO = 0.7f
         private const val ADAPTIVE_RIM_RATIO = 0.05f
-        private const val ADAPTIVE_SHADOW_RATIO = 0.12f
         private const val RIM_BAND_MAX_PX = 6f
-        private const val SHADOW_BAND_MAX_PX = 28f
         private const val ENABLE_PERFORMANCE_LOG = false  // 性能日志开关（仅调试时打开，每帧构造日志字符串有开销）
         private const val ENABLE_MEMORY_LOG = false  // 内存日志开关（默认关闭，避免日志污染）
 
@@ -90,32 +85,6 @@ open class LiquidGlassView @JvmOverloads constructor(
                 invalidate()
             }
         }
-
-    /**
-     * 是否跳过不支持透镜管线版本的位移贴图生成。
-     *
-     * API 33 以下默认开启：这些版本无法使用透镜管线，生成位移贴图容易造成
-     * GC 峰值。设为 true 时旧渲染管线的色差效果会被跳过；仍可按实例覆盖。
-     */
-    var skipMapGenOnApi33 = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-        set(value) {
-            if (field == value) return
-            field = value
-
-            if (value) {
-                // 使后台正在生成的结果过期，并及时释放已缓存的位图内存。
-                mapGenerationId++
-                mapGenerationPending = false
-                displacementMaps?.values?.forEach { it.recycle() }
-                displacementMaps = null
-                aberrationDirty = true
-                invalidate()
-            } else {
-                // 恢复默认行为：仅在当前路径确实需要时按需生成。
-                maybeGenerateDisplacementMaps()
-            }
-        }
-
     var enableChromaticDispersion = false  // 色散效果（物理光学）
         set(value) {
             if (field != value) {
@@ -311,40 +280,15 @@ open class LiquidGlassView @JvmOverloads constructor(
     /** 点击/按压效果开关（按压缩放 + 拖拽弹性拉伸 + 透镜按压形变） */
     var enablePressEffect = true
 
-    /** 按压时的缩放目标（1 = 按下不缩放） */
-    open var pressScale = 0.95f
-        set(value) {
-            field = value.coerceIn(0.5f, 1f)
-        }
-
     /**
-     * 按下时叠加在玻璃上的颜色；alpha 即最大叠加强度。
-     *
-     * 默认透明：只有显式配置后才启用按下态染色。
-     * 例如普通玻璃为 [glassTint] 时，可设置同色系的半透明颜色作为按下反馈。
+     * 按压时的缩放目标（0.5–1.5）：< 1 按下缩小，> 1 按下放大（iOS 26 交互玻璃的手感），
+     * 1 = 按下不缩放。缩放走 View 变换属性，可以溢出自身布局边界；玻璃贴着父容器
+     * 边缘且放大时，父容器要设 clipChildren = false 才不会被切
      */
-    var pressGlassTint: Int = Color.TRANSPARENT
+    var pressScale = 0.95f
         set(value) {
-            if (field != value) {
-                field = value
-                invalidate()
-            }
+            field = value.coerceIn(0.5f, 1.5f)
         }
-
-    /**
-     * 设置按压态玻璃染色并单独指定强度（忽略 [color] 自带的 alpha）。
-     *
-     * @param color 按压态染色色相，alpha 分量会被忽略
-     * @param strength 按压态染色强度，范围为 0-1
-     */
-    fun setPressGlassTint(color: Int, strength: Float) {
-        pressGlassTint = Color.argb(
-            (strength.coerceIn(0f, 1f) * 255f).roundToInt(),
-            Color.red(color),
-            Color.green(color),
-            Color.blue(color)
-        )
-    }
 
     private var cornerTL = 999f
     private var cornerTR = 999f
@@ -408,7 +352,7 @@ open class LiquidGlassView @JvmOverloads constructor(
     private var flatLeft = false
 
     /**
-     * 把某几条边设为"平边"：那条边上没有斜面、折射带、高光和内阴影，看起来玻璃
+     * 把某几条边设为"平边"：那条边上没有斜面、折射带和高光，看起来玻璃
      * 是从那条边延伸出去的。几块玻璃贴边拼成一块（M3 分组列表）时，相邻边设平边，
      * 拼接处就不会各自出现一圈透镜边缘。
      *
@@ -487,7 +431,7 @@ open class LiquidGlassView @JvmOverloads constructor(
     // ==================== Liquid Glass 2.0（API 33+ 统一透镜管线） ====================
 
     /**
-     * 允许使用 API 33+ 的统一透镜着色器管线（SDF 折射 + 色散 + 高光 + 内阴影 + 融合）
+     * 允许使用 API 33+ 的统一透镜着色器管线（SDF 折射 + 色散 + 高光 + 融合）
      *
      * 渲染路径优先级：
      * - useShaderPipeline && useHardwareBlurWhenPossible && API 33+ → 透镜管线（2.0）
@@ -513,19 +457,6 @@ open class LiquidGlassView @JvmOverloads constructor(
                 field = value
                 updateAdaptiveMeter()
                 blurDirty = true
-                invalidate()
-            }
-        }
-
-    /**
-     * 边缘光照风格（仅 API 33+ 透镜管线）。默认 [EdgeLightingMode.IOS_BALANCED]，
-     * 让左上与右下显示等强白色折射边；设为 [EdgeLightingMode.PHYSICAL] 可恢复
-     * 先前的单向主光与背光侧内阴影。
-     */
-    var edgeLightingMode = EdgeLightingMode.IOS_BALANCED
-        set(value) {
-            if (field != value) {
-                field = value
                 invalidate()
             }
         }
@@ -571,8 +502,8 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 透镜几何随控件尺寸自适应（仅透镜管线，默认开）
      *
      * [bevelWidth] / [refractionHeight] 的默认值是按大面板定的，直接落到 40dp 的按钮上
-     * 整块都是边缘带，贴边高光和内阴影也显得粗。开启后按（最小）形状的短边钳一次：
-     * 斜面 ≤ 短边 × 0.3，高光带上限 ≤ 短边 × 0.05，内阴影带上限 ≤ 短边 × 0.12，
+     * 整块都是边缘带，贴边高光也显得粗。开启后按（最小）形状的短边钳一次：
+     * 斜面 ≤ 短边 × 0.3，高光辉光带上限 ≤ 短边 × 0.05，
      * 折射 ≤ 短边 × 0.7 且在 110dp 以下再按 (短边 / 110dp) 平方收——48dp 的按钮约 38px。
      * 短边达到 110dp 时这几个上限都不低于默认值，中大面板不受影响；显式设的更小的值
      * 同样不受影响。关掉则一律按设定值原样渲染。
@@ -1083,34 +1014,11 @@ open class LiquidGlassView @JvmOverloads constructor(
             blurAmount = ta.getFloat(R.styleable.LiquidGlassView_blurAmount, blurAmount)
             saturation = ta.getFloat(R.styleable.LiquidGlassView_saturation, saturation)
             aberrationIntensity = ta.getFloat(R.styleable.LiquidGlassView_aberrationIntensity, aberrationIntensity)
-            skipMapGenOnApi33 = ta.getBoolean(
-                R.styleable.LiquidGlassView_skipMapGenOnApi33,
-                skipMapGenOnApi33
-            )
-            elasticity = ta.getFloat(R.styleable.LiquidGlassView_elasticity, elasticity)
-            enablePressEffect = ta.getBoolean(
-                R.styleable.LiquidGlassView_enablePressEffect,
-                enablePressEffect
-            )
-            pressScale = ta.getFloat(R.styleable.LiquidGlassView_pressScale, pressScale)
-            pressGlassTint = ta.getColor(
-                R.styleable.LiquidGlassView_pressGlassTint,
-                pressGlassTint
-            )
-            // 强度必须与颜色同时配置；否则默认透明色会被改成半透明黑色。
-            // 显式给出二者时，强度覆盖颜色自带 alpha，与 glassTintStrength 语义一致。
-            if (ta.hasValue(R.styleable.LiquidGlassView_pressGlassTint) &&
-                ta.hasValue(R.styleable.LiquidGlassView_pressGlassTintStrength)
-            ) {
-                setPressGlassTint(
-                    pressGlassTint,
-                    ta.getFloat(R.styleable.LiquidGlassView_pressGlassTintStrength, 0f)
-                )
-            }
             enableDynamicBackground = ta.getBoolean(
                 R.styleable.LiquidGlassView_enableDynamicBackground,
                 enableDynamicBackground
             )
+            elasticity = ta.getFloat(R.styleable.LiquidGlassView_elasticity, elasticity)
             cornerRadius = ta.getDimension(R.styleable.LiquidGlassView_cornerRadius, cornerRadius)
             if (ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopLeft) ||
                 ta.hasValue(R.styleable.LiquidGlassView_cornerRadiusTopRight) ||
@@ -1128,11 +1036,6 @@ open class LiquidGlassView @JvmOverloads constructor(
             refractionHeight = ta.getDimension(R.styleable.LiquidGlassView_refractionHeight, refractionHeight)
             dispersionStrength = ta.getFloat(R.styleable.LiquidGlassView_dispersionStrength, dispersionStrength)
             edgeSoftness = ta.getDimension(R.styleable.LiquidGlassView_edgeSoftness, edgeSoftness)
-            edgeLightingMode = if (ta.getInt(R.styleable.LiquidGlassView_edgeLightingMode, 0) == 1) {
-                EdgeLightingMode.PHYSICAL
-            } else {
-                EdgeLightingMode.IOS_BALANCED
-            }
             enableSensorHighlight = ta.getBoolean(R.styleable.LiquidGlassView_sensorHighlight, enableSensorHighlight)
             enableAdaptiveTint = ta.getBoolean(R.styleable.LiquidGlassView_adaptiveTint, enableAdaptiveTint)
             adaptiveLensScale = ta.getBoolean(R.styleable.LiquidGlassView_adaptiveLensScale, adaptiveLensScale)
@@ -1246,7 +1149,6 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 完成后自动重绘补上
      */
     private fun generateDisplacementMaps() {
-        if (!shouldGenerateDisplacementMaps()) return
         val w = width
         val h = height
         if (w <= 0 || h <= 0) return
@@ -1279,22 +1181,17 @@ open class LiquidGlassView @JvmOverloads constructor(
             GlassLensRenderer.isSupported() && lensRenderer?.isAvailable != false
 
     private fun maybeGenerateDisplacementMaps() {
-        if (!shouldGenerateDisplacementMaps() || lensPathLikely()) return
+        if (lensPathLikely()) return
         generateDisplacementMaps()
     }
 
     /** 旧管线需要位移贴图但尚未生成时补一次生成 */
     private fun ensureDisplacementMaps() {
-        if (shouldGenerateDisplacementMaps() && displacementMaps == null && !mapGenerationPending &&
-            width > 0 && height > 0
-        ) {
+        if (displacementMaps == null && !mapGenerationPending && width > 0 && height > 0) {
             generateDisplacementMaps()
         }
     }
-
-    /** 开关由默认 Android 版本策略初始化，也允许调用方按实例覆盖。 */
-    private fun shouldGenerateDisplacementMaps(): Boolean = !skipMapGenOnApi33
-
+    
     /**
      * 更新阴影效果
      */
@@ -1396,14 +1293,11 @@ open class LiquidGlassView @JvmOverloads constructor(
         // ✅ 无障碍降级：不透明材质（Reduce Transparency）
         if (shouldRenderOpaque()) {
             drawOpaqueFallback(canvas)
-            // 不透明降级也保留按压染色，避免无障碍模式下交互反馈缺失。
-            drawPressTintOverlay(canvas)
             return
         }
 
-        // ✅ API 33+ 统一透镜管线（Liquid Glass 2.0：折射+色散+高光+内阴影+融合）
+        // ✅ API 33+ 统一透镜管线（Liquid Glass 2.0：折射+色散+高光+融合）
         if (tryDrawLensGlass(canvas, calculatedBlurRadius)) {
-            drawPressTintOverlay(canvas)
             // 边缘高光由着色器的法线光照完成，无需 Kotlin 层描边
             if (enableDynamicBackground) {
                 invalidate()
@@ -1414,7 +1308,6 @@ open class LiquidGlassView @JvmOverloads constructor(
         // ✅ API 31+ 旧 GPU 快速路径（模糊+饱和度，零拷贝）
         if (tryDrawHardwareBlur(canvas, calculatedBlurRadius)) {
             drawGlassTintOverlay(canvas)
-            drawPressTintOverlay(canvas)
             if (enableEdgeHighlight) {
                 drawEdgeHighlight(canvas, bounds)
             }
@@ -1472,7 +1365,6 @@ open class LiquidGlassView @JvmOverloads constructor(
                     }
                 }
                 drawGlassTintOverlay(canvas)
-                drawPressTintOverlay(canvas)
 
                 canvas.restoreToCount(saveCount)
             }
@@ -1489,35 +1381,13 @@ open class LiquidGlassView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * 绘制按压态颜色。透明度随 [pressDepth] 动画插值，三条渲染管线共用，
-     * 因此无论设备是否支持透镜/硬件模糊效果，按下反馈都保持一致。
-     */
-    private fun drawPressTintOverlay(canvas: Canvas) {
-        if (!enablePressEffect || pressDepth <= 0f || Color.alpha(pressGlassTint) == 0) return
-
-        val alpha = (Color.alpha(pressGlassTint) * pressDepth).roundToInt().coerceIn(0, 255)
-        if (alpha == 0) return
-
-        val saveCount = canvas.save()
-        canvas.clipPath(clipPath)
-        tintOverlayPaint.color = Color.argb(
-            alpha,
-            Color.red(pressGlassTint),
-            Color.green(pressGlassTint),
-            Color.blue(pressGlassTint)
-        )
-        canvas.drawPath(clipPath, tintOverlayPaint)
-        canvas.restoreToCount(saveCount)
-    }
-
     // ==================== 透镜管线（Liquid Glass 2.0） ====================
 
     /**
      * 尝试走 API 33+ 统一透镜着色器管线
      *
-     * 覆盖：模糊、饱和度、SDF 折射、色散、法线镜面高光（传感器光源）、
-     * 内阴影、自适应染色、Clear 压暗、按压液态、双形状 smin 融合。
+     * 覆盖：模糊、饱和度、SDF 折射、色散、法线边缘亮线（左上 / 右下两道对称瓣，
+     * 传感器光源）、自适应染色、Clear 压暗、按压液态、双形状 smin 融合。
      * 自定义背景捕获仍走 CPU 管线。
      *
      * @return true 表示已完成绘制
@@ -1568,12 +1438,11 @@ open class LiquidGlassView @JvmOverloads constructor(
         val s2hh = if (p2 != null) (p2.height() / 2f).coerceAtLeast(1f) else 0f
         val r2 = if (p2 != null) secondaryShapeCorner.coerceIn(0f, min(s2hw, s2hh)) else 0f
 
-        // —— 尺寸自适应：按最小形状的短边钳斜面 / 折射 / 高光带 / 内阴影带。
+        // —— 尺寸自适应：按最小形状的短边钳斜面 / 折射 / 高光辉光带。
         // 默认值是给大面板定的，小控件照搬整块都是边缘带；短边够大时碰不到上限 ——
         val bevelEff: Float
         val refractEff: Float
         val rimBandMax: Float
-        val shadowMax: Float
         if (adaptiveLensScale) {
             var minDim = 2f * min(s1hw, s1hh)
             if (p2 != null) minDim = min(minDim, 2f * min(s2hw, s2hh))
@@ -1584,12 +1453,10 @@ open class LiquidGlassView @JvmOverloads constructor(
             bevelEff = min(bevelWidth, minDim * ADAPTIVE_BEVEL_RATIO).coerceAtLeast(2f)
             refractEff = min(refractionHeight, refractCap)
             rimBandMax = min(RIM_BAND_MAX_PX, minDim * ADAPTIVE_RIM_RATIO).coerceAtLeast(2f)
-            shadowMax = min(SHADOW_BAND_MAX_PX, minDim * ADAPTIVE_SHADOW_RATIO).coerceAtLeast(4f)
         } else {
             bevelEff = bevelWidth
             refractEff = refractionHeight
             rimBandMax = RIM_BAND_MAX_PX
-            shadowMax = SHADOW_BAND_MAX_PX
         }
         // 不翻折：位移不超过剖面单调的上限时采样坐标沿深度单调（贴边放大率无穷大、往内降到 1），
         // 边缘只做放大延展；超过上限采样会折返，出现压缩镜像环。上限 = 1 / 剖面在贴边处的斜率：
@@ -1633,18 +1500,12 @@ open class LiquidGlassView @JvmOverloads constructor(
         val spec = if (enableEdgeHighlight) (edgeHighlightOpacity / 100f) * material.specBoost else 0f
 
         // —— 光源方向（量化到 0.005，避免静止时反复重建 effect） ——
-        // 两种边缘光照模式都可跟随重力。IOS_BALANCED 在着色器里对相反法线使用
-        // 同一强度，因此光轴移动时两条对角白边会同步移动，仍然保持平衡。
         val sensorActive = enableSensorHighlight && !a11yReducedMotion && !a11yPowerSave
         val lx: Float
         val ly: Float
         if (sensorActive) {
             lx = (LightSourceController.lightDirX * 200f).toInt() / 200f
             ly = (LightSourceController.lightDirY * 200f).toInt() / 200f
-        } else if (edgeLightingMode == EdgeLightingMode.IOS_BALANCED) {
-            // 与 Android 12 及以下的 135° 边框渐变对齐：左上和右下是同一条白边轴。
-            lx = LightSourceController.IOS_BALANCED_X
-            ly = LightSourceController.IOS_BALANCED_Y
         } else {
             lx = LightSourceController.DEFAULT_X
             ly = LightSourceController.DEFAULT_Y
@@ -1685,12 +1546,9 @@ open class LiquidGlassView @JvmOverloads constructor(
             falloff = falloff,
             outward = refractionOutward,
             rimBandMax = rimBandMax,
-            shadowMax = shadowMax,
             dispersion = disp,
             lightX = lx, lightY = ly,
             spec = spec,
-            edgeLightingMode = edgeLightingMode,
-            innerShadow = material.innerShadow,
             tint = if (adaptivePerPixel) 0 else currentTintColor(),
             adaptiveTint = adaptivePerPixel,
             glassTint = glassTint,
