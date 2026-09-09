@@ -161,6 +161,10 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   `app:glassTintStrength` (0–1) when you would rather not encode strength in the alpha.
 - `LiquidGlassView.setGlassTint(color: Int, strength: Float)` — same thing with hue and
   strength passed separately; the alpha carried by `color` is ignored.
+- `LiquidGlassView.skipMapGenOnApi33: Boolean` — classic-pipeline compatibility switch.
+  Defaults to `true` below API 33 to avoid allocating displacement maps that are normally
+  unnecessary there; set `false` only when classic displacement-map chromatic aberration is
+  required. XML: `app:skipMapGenOnApi33`.
 - `LiquidGlassView.glassAppearanceListener: ((isOverLight: Boolean) -> Unit)?` — fires when
   the backdrop luminance flips; use it to switch your foreground text between light and dark.
 - `LiquidGlassView.pressScale: Float` — scale while pressed, default `0.95f`, clamped to
@@ -168,7 +172,11 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   transform, so it can overflow the layout bounds; a glass flush against its parent's edge
   needs `clipChildren="false"` on the parent when it grows. `enablePressEffect` (default
   `true`) switches the whole press feedback off; `elasticity` (default `0.15f`) is the
-  drag stretch.
+  drag stretch. `pressGlassTint: Int` is an optional press-state overlay color: its alpha is
+  the maximum strength and it works on every rendering path. Use
+  `setPressGlassTint(color, strength)` to set hue and strength separately. XML:
+  `app:enablePressEffect`, `app:pressScale`, `app:pressGlassTint`, and
+  `app:pressGlassTintStrength` (0–1; overrides the color alpha when both are supplied).
 - `LiquidGlassView.backdropSource: View?` — which view to capture as the backdrop. `null`
   (default) = the direct parent, so the backdrop must be a sibling. Set it to any view in the
   tree (a RecyclerView the glass floats over, a wallpaper outside the ScrollView) and the

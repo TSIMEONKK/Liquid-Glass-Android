@@ -2582,6 +2582,8 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         target.accessibilityMode = src.accessibilityMode
         target.enablePressEffect = src.enablePressEffect
         target.pressScale = src.pressScale
+        // 按压染色也属于交互视觉的一部分，附属玻璃必须与主玻璃保持一致。
+        target.pressGlassTint = src.pressGlassTint
         target.elasticity = src.elasticity
         target.enableBackdropBlur = src.enableBackdropBlur
         // Android 13 位移贴图策略必须同步给附属玻璃，避免只有主视图跳过生成。

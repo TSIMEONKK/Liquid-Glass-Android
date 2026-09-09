@@ -279,9 +279,12 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 | `saturation` | Float | `140f` | percent | 100 = unchanged |
 | `aberrationIntensity` | Float | `2f` | — | Classic RGB-separation strength |
 | `displacementScale` | Float | `70f` | — | Classic edge distortion |
+| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | Classic-pipeline compatibility switch. On API 32 and below it skips displacement-map allocation by default; set `false` to enable classic chromatic aberration. |
 | `elasticity` | Float | `0.15f` | — | Touch spring response |
 | `enablePressEffect` | Boolean | `true` | — | Press feedback: scale to `pressScale`, elastic stretch while dragging, lens press deformation (API 33+) |
 | `pressScale` | Float | `0.95f` | 0.5–1.5 | Scale while pressed. Below 1 shrinks, above 1 grows like iOS 26 interactive glass. Uses the View transform, so it may overflow the layout bounds; set `clipChildren="false"` on the parent if the glass touches the parent's edge |
+| `pressGlassTint` | Int (ARGB) | `TRANSPARENT` | — | Optional press-state tint. Its alpha is the maximum overlay strength and it works on every rendering pipeline. |
+| `setPressGlassTint(color, strength)` | Function | — | 0–1 | Kotlin helper that uses `strength` instead of the alpha embedded in `color`. In XML use `pressGlassTintStrength`. |
 | `blurMethod` | `BlurMethod` | `SMART` | — | See enum table below |
 | `enableBackdropBlur` | Boolean | `true` | — | |
 | `enableChromaticAberration` | Boolean | `true` | — | Classic pipeline |
@@ -302,11 +305,17 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 Declared under the `LiquidGlassView` styleable, namespace `app`:
 
 `displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `enableDynamicBackground` · `elasticity` ·
+`skipMapGenOnApi33` · `enablePressEffect` · `pressScale` · `pressGlassTint` (color) · `pressGlassTintStrength` (float 0–1) ·
 `cornerRadius` (dimension) · `glassMaterial` (`regular` | `clear`) · `bevelWidth` (dimension) ·
 `refractionHeight` (dimension) · `refractionFalloff` (float 0–4) · `refractionNoFold` · `refractionOutward` ·
 `adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
 `glassTint` (color) · `glassTintStrength` (float 0–1, overrides the alpha in `glassTint`) ·
 `backdropSourceId` (reference — id of the backdrop view; omit for the direct parent)
+
+> **Merge compatibility contract:** `skipMapGenOnApi33`, `enablePressEffect`, `pressScale`,
+> `pressGlassTint`, and `pressGlassTintStrength` are public XML attributes. When merging upstream,
+> keep their declarations in `attrs.xml`, parsing in `LiquidGlassView.parseAttributes`, and the
+> runtime behaviour documented above in sync.
 
 #### Enum values
 
@@ -743,9 +752,12 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 | `saturation` | Float | `140f` | 百分比 | 100 = 不变 |
 | `aberrationIntensity` | Float | `2f` | — | 经典 RGB 分离强度 |
 | `displacementScale` | Float | `70f` | — | 经典边缘畸变 |
+| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | 经典管线兼容开关。API 32 及以下默认跳过位移贴图分配；设为 `false` 可开启经典色差。 |
 | `elasticity` | Float | `0.15f` | — | 触摸弹性响应 |
 | `enablePressEffect` | Boolean | `true` | — | 按压反馈：缩放到 `pressScale`、拖拽弹性拉伸、透镜按压形变（API 33+） |
 | `pressScale` | Float | `0.95f` | 0.5–1.5 | 按住时的缩放。小于 1 缩小，大于 1 像 iOS 26 交互玻璃那样放大。走 View 变换，可以溢出自身布局边界；玻璃贴着父容器边缘时给父容器设 `clipChildren="false"` |
+| `pressGlassTint` | Int (ARGB) | `TRANSPARENT` | — | 可选的按压态玻璃染色；alpha 是最大叠加强度，全部渲染管线均生效。 |
+| `setPressGlassTint(color, strength)` | 函数 | — | 0–1 | Kotlin 辅助函数，用 `strength` 覆盖 `color` 自带 alpha；XML 对应 `pressGlassTintStrength`。 |
 | `blurMethod` | `BlurMethod` | `SMART` | — | 合法值见下表 |
 | `enableBackdropBlur` | Boolean | `true` | — | |
 | `enableChromaticAberration` | Boolean | `true` | — | 经典管线 |
@@ -766,11 +778,16 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 声明在 `LiquidGlassView` styleable 下，命名空间 `app`：
 
 `displacementScale` · `blurAmount` · `saturation` · `aberrationIntensity` · `enableDynamicBackground` · `elasticity` ·
+`skipMapGenOnApi33` · `enablePressEffect` · `pressScale` · `pressGlassTint`（color）· `pressGlassTintStrength`（float 0–1）·
 `cornerRadius`（dimension） · `glassMaterial`（`regular` | `clear`） · `bevelWidth`（dimension） ·
 `refractionHeight`（dimension） · `refractionFalloff`（float 0–4） · `refractionNoFold` · `refractionOutward` ·
 `adaptiveLensScale` · `dispersionStrength` · `sensorHighlight` · `adaptiveTint` ·
 `glassTint`（color） · `glassTintStrength`（float 0–1，覆盖 `glassTint` 里的 alpha） ·
 `backdropSourceId`（reference —— 背景来源视图的 id，不填 = 直接父容器）
+
+> **上游合并兼容性契约：** `skipMapGenOnApi33`、`enablePressEffect`、`pressScale`、
+> `pressGlassTint`、`pressGlassTintStrength` 是公开 XML 属性。合并上游时必须同步保留
+> `attrs.xml` 声明、`LiquidGlassView.parseAttributes` 解析，以及本文档中的运行时行为说明。
 
 #### 枚举值
 

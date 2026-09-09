@@ -22,10 +22,11 @@
         <attr name="aberrationIntensity" format="float" />
         <!-- 背景或玻璃移动时逐帧更新背景捕获；默认 false，静态场景保持缓存以节省性能 -->
         <attr name="enableDynamicBackground" format="boolean" />
-        <!-- 仅 Android 13：跳过位移贴图生成以减少 Bitmap 分配和 GC -->
+        <!-- 经典管线兼容开关：API 32 及以下默认跳过位移贴图以减少 Bitmap 分配和 GC。
+             此属性与下方四个按压属性必须同步保留在解析代码和 README 中。 -->
         <attr name="skipMapGenOnApi33" format="boolean" />
         <attr name="elasticity" format="float" />
-        <!-- 按压交互：pressScale 为按下时目标缩放（0.5-1）；
+        <!-- 按压交互：pressScale 为按下时目标缩放（0.5-1.5）；
              pressGlassTintStrength 显式设置时会覆盖 pressGlassTint 的 alpha -->
         <attr name="enablePressEffect" format="boolean" />
         <attr name="pressScale" format="float" />
