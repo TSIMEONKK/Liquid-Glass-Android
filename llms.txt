@@ -193,8 +193,8 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
 - `LiquidGlassView.frameStatsListener` / `FrameStats` — per-frame render timings.
 - `ScrollEdgeBlurView` — progressive scroll-edge blur. `edge`, `maxBlurRadius`,
   `bindScrollView(view)`.
-- Ready-made widgets — the button, FAB, tab bar and list item are `LiquidGlassView`
-  subclasses (every glass property applies; `setOnClickListener` works; with
+- Ready-made widgets — the button, FAB, tab bar, tab layout, chip and list item are
+  `LiquidGlassView` subclasses (every glass property applies; `setOnClickListener` works; with
   `enableAdaptiveTint = true` the foreground auto-flips light/dark until an explicit color
   is set):
   - `LiquidGlassButton` — pill button with centered label. XML `android:text` /
@@ -211,6 +211,35 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
     null = auto white/black by backdrop luminance; set a color for a brand tint). XML
     `app:glassTabEntries` (string-array, text-only). `setTabs` resets selection to 0
     without firing the callback; setting `selectedIndex` fires it.
+  - `LiquidGlassTabLayout` — Material `TabLayout`-style strip on one glass pill; the
+    indicator is the same refracting droplet as the tab bar (overshoot + liquid stretch on
+    select, width interpolated between tabs). `tabMode` = `LiquidGlassTabLayout.MODE_FIXED`
+    (default, equal widths) or `MODE_SCROLLABLE` (content-sized tabs, horizontally
+    scrollable, selected tab auto-centred). Tabs: `newTab()` then `addTab(tab, setSelected
+    = tabs.isEmpty())`, or `addTab(text): Tab`; `LiquidGlassTabLayout.Tab` has `text`,
+    `icon` (tinted like the text), `contentDescription`, `tag`, `position`, `isSelected`,
+    `select()`. `getTabAt(i)`, `removeTabAt(i)`, `removeAllTabs()`, `tabCount`,
+    `selectedTabPosition` (-1 when empty), `selectTab(index, animate = true)` /
+    `selectTab(tab)`, `setScrollPosition(position, positionOffset, updateSelectedTab =
+    true)` to follow a pager, `addOnTabSelectedListener { tab -> }` /
+    `addOnTabReselectedListener { tab -> }` (fun interfaces, Java lambdas work),
+    `selectedTintColor: Int?`. XML `app:glassTabEntries`, `app:glassTabMode`
+    (`fixed|scrollable`). Not a drop-in for `com.google.android.material.tabs.TabLayout`.
+  - `LiquidGlassTabLayoutMediator(tabLayout, viewPager2, autoRefresh = true, smoothScroll =
+    true) { tab, position -> tab.text = ... }` then `.attach()` / `.detach()` — same
+    contract as Material's `TabLayoutMediator`: the droplet follows drag progress, tapping
+    a tab pages the pager, tabs rebuild on adapter changes. The library declares
+    viewpager2 as `compileOnly`; the app must depend on `androidx.viewpager2:viewpager2`.
+  - `LiquidGlassChip` — 32dp pill chip: optional leading icon, text, optional close icon.
+    `isCheckable` makes a tap toggle `isChecked`; checked chips render `checkedTint`
+    (straight-alpha ARGB, default `0x660A84FF`) instead of `glassTint` and show a check in
+    the leading slot (`isCheckedIconVisible`). `setOnCheckedChangeListener { chip, checked
+    -> }`, `setOnCloseIconClickListener { chip -> }` with `isCloseIconVisible = true`.
+    Kotlin `text`, `chipIcon` / `setChipIconResource(id)`, `isChipIconTintEnabled`,
+    `closeIcon`, `toggle()`, `setTextColor(color)`, `textView`, `chipIconView`,
+    `closeIconView`. XML `android:text`, `android:textSize`, `android:textColor`,
+    `android:checkable`, `android:checked`, `app:glassChipIcon`, `app:glassCloseIconVisible`,
+    `app:glassCheckedIconVisible`, `app:glassCheckedTint`.
   - `LiquidGlassListItem` — Material 3 list item (leading icon → headline / supporting
     text → trailing text / icon; 56dp one-line, 72dp two-line). `position:
     LiquidGlassListItem.Position` = `SINGLE` / `FIRST` / `MIDDLE` / `LAST` decides which
@@ -219,11 +248,15 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
     tap-to-expand (`setExpanded(expanded, animate)`, `isExpanded`, `onExpandedChanged`,
     `expandOnClick`, `rotateTrailingIconOnExpand`). Kotlin `headline`, `supportingText`,
     `trailingText`, `leadingIcon` / `setLeadingIconResource(id)`, `trailingIcon` /
-    `setTrailingIconResource(id)`, `setTextColor(color)`; static
-    `applyGroupPositions(items)` and `positionFor(index, count)` (for RecyclerView
+    `setTrailingIconResource(id)`, `setTextColor(color)`, `updatePosition(index, count)`;
+    static `applyGroupPositions(items)` and `positionFor(index, count)` (for RecyclerView
     adapters). XML `app:glassHeadline`, `app:glassSupportingText`, `app:glassLeadingIcon`,
     `app:glassTrailingIcon`, `app:glassTrailingText`, `app:glassListPosition`
     (`single|first|middle|last`), `app:glassGroupCornerRadius`, `app:glassInnerCornerRadius`.
+    Custom content (the M3 `ListItemCardView` pattern): child views written inside
+    `<LiquidGlassListItem>` in XML, or `contentView: View?` in code, replace the built-in
+    row; the item then only draws the position-shaped glass and keeps expand / click (no
+    minimum height, no automatic foreground colours — follow `glassAppearanceListener`).
     Each row is its own `LiquidGlassView`, so use it for settings pages and menus, not
     infinite feeds.
 - `LiquidGlassListGroup` — a vertical `LinearLayout` (not a `LiquidGlassView`) that holds
@@ -237,6 +270,17 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   `app:glassListStyle` (`merged|separated`), `app:glassItemSpacing`, `app:cornerRadius`,
   `app:backdropSourceId`. The group owns the vertical gap between rows and overwrites the
   children's `topMargin`.
+- `LiquidGlassChipGroup` — a flow `ViewGroup` (not a `LiquidGlassView`) for
+  `LiquidGlassChip`s, like Material's `ChipGroup`: wraps onto new lines
+  (`chipSpacingHorizontal` / `chipSpacingVertical`, px, default 8dp, `setChipSpacing(px)`)
+  or `isSingleLine` (put it in a `HorizontalScrollView`). Selection: `isSingleSelection`,
+  `isSelectionRequired` (the last checked chip cannot be tapped off; `clearCheck()` still
+  clears), `checkedChipIds: List<Int>`, `checkedChipId` (single mode, else `View.NO_ID`),
+  `check(id)`, `setOnCheckedStateChangeListener { group, checkedIds -> }`. Chips without an
+  id get one. Transparent like `LiquidGlassListGroup`: set `backdropSource` /
+  `enableDynamicBackground` on the group, they are pushed to every chip. XML
+  `app:glassChipSpacingHorizontal`, `app:glassChipSpacingVertical`, `app:glassSingleLine`,
+  `app:glassSingleSelection`, `app:glassSelectionRequired`, `app:backdropSourceId`.
 - `LiquidGlassToast` — glass toast in its own non-touchable, non-focusable app window,
   stacked above the activity and any open dialog / bottom sheet (not a `Toast` window: a
   `Toast` window cannot refract the app, and custom toast views are deprecated since

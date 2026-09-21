@@ -10,6 +10,10 @@
  * 尾部图标同时旋转 180°。行本身默认关掉按压缩放和手指凸起——列表行一按就缩小，
  * 行与行之间会露出一条缝。
  *
+ * 自带内容（Material 3 ListItemCardView 的用法）：XML 里写在 `<LiquidGlassListItem>` 里面的子视图，
+ * 或代码里设的 [contentView]，会替换内置的 M3 行——行只负责按 [position] 画玻璃形状、展开和点击，
+ * 里面放什么、怎么排、文字什么颜色都由使用方决定（前景配色可以跟 glassAppearanceListener 走）。
+ *
  * 每一行都是独立的 LiquidGlassView（各自截背景、各跑一遍着色器），适合设置页 / 菜单这类
  * 行数有限的列表，不建议用在无限滚动的信息流里。
  *
@@ -22,9 +26,21 @@
  *     app:glassHeadline="Wi-Fi"
  *     app:glassSupportingText="Connected" />
  * ```
+ * ```xml
+ * <com.example.liquidglass.LiquidGlassListItem
+ *     android:layout_width="match_parent"
+ *     android:layout_height="wrap_content">
+ *     <LinearLayout ...>          <!-- 自带内容：标题 + 开关，任意布局 -->
+ *         <TextView ... />
+ *         <Switch ... />
+ *     </LinearLayout>
+ * </com.example.liquidglass.LiquidGlassListItem>
+ * ```
  * ```kotlin
  * LiquidGlassListItem.applyGroupPositions(rows)   // 按顺序自动分配 first / middle / last
  * row.expandedView = detailView                   // 点击展开
+ * row.contentView = myRowLayout                   // 代码里换成自带内容
+ * row.updatePosition(position, itemCount)         // RecyclerView 的 onBindViewHolder 里
  * ```
  */
 package com.example.liquidglass
@@ -38,8 +54,10 @@ import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -65,6 +83,9 @@ open class LiquidGlassListItem @JvmOverloads constructor(
     private val textColumn = LinearLayout(context)
     private val expandSection = LinearLayout(context)
 
+    /** 自带内容的位置：在内置行和展开区之间，有内容时替换内置行 */
+    private val contentSlot = FrameLayout(context)
+
     /** 显式设置过文字颜色后不再跟随背景明暗自动切换 */
     private var autoColors = true
 
@@ -88,6 +109,40 @@ open class LiquidGlassListItem @JvmOverloads constructor(
         set(value) {
             field = value
             applyShape()
+        }
+
+    /** 按在组里的下标和总数设置 [position]（RecyclerView 的 onBindViewHolder 里用） */
+    fun updatePosition(index: Int, count: Int) {
+        position = positionFor(index, count)
+    }
+
+    /**
+     * 自带内容：非 null 时替换内置的 M3 行（图标 / 标题 / 副标题 / 尾部），行只负责按 [position]
+     * 画玻璃形状、展开和点击；null 恢复内置行。XML 里写在行里面的子视图会自动放到这里。
+     *
+     * 自带内容不设最小高度（内置行是 56 / 72dp），也不参与前景自动配色。
+     * 视图原有的 LayoutParams（宽高、margin、gravity）按 FrameLayout 的语义保留
+     */
+    var contentView: View? = null
+        set(value) {
+            if (field === value) return
+            contentSlot.removeAllViews()
+            field = value
+            if (value != null) {
+                (value.parent as? ViewGroup)?.removeView(value)
+                val lp = value.layoutParams
+                contentSlot.addView(value, when (lp) {
+                    is FrameLayout.LayoutParams -> lp
+                    is MarginLayoutParams -> FrameLayout.LayoutParams(lp)
+                    null -> FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    else -> FrameLayout.LayoutParams(lp)
+                })
+            }
+            row.visibility = if (value == null) View.VISIBLE else View.GONE
+            contentSlot.visibility = if (value == null) View.GONE else View.VISIBLE
+            updateMinHeight()
         }
 
     var headline: CharSequence
@@ -308,6 +363,11 @@ open class LiquidGlassListItem @JvmOverloads constructor(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        contentSlot.visibility = View.GONE
+        container.addView(contentSlot, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
         expandSection.orientation = LinearLayout.VERTICAL
         expandSection.setPadding(hPad, 0, hPad, dp(16))
         expandSection.visibility = View.GONE
@@ -434,7 +494,23 @@ open class LiquidGlassListItem @JvmOverloads constructor(
         }
     }
 
+    /** XML 里写在行里面的子视图 = 自带内容，挪进内容位 */
+    override fun onFinishInflate() {
+        super.onFinishInflate()
+        val children = (0 until childCount).map { getChildAt(it) }.filter { it !== container }
+        if (children.isEmpty()) return
+        children.forEach { removeView(it) }
+        contentView = children.singleOrNull() ?: FrameLayout(context).apply {
+            // 多个子视图原样装进一层 FrameLayout（它们本来就按 FrameLayout 的规则排）
+            children.forEach { addView(it, it.layoutParams) }
+        }
+    }
+
     private fun updateMinHeight() {
+        if (contentView != null) {
+            minimumHeight = 0
+            return
+        }
         minimumHeight = dp(if (supportingTextView.visibility == View.VISIBLE) 72 else 56)
     }
 

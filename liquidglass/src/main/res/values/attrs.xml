@@ -118,4 +118,43 @@
     <declare-styleable name="LiquidGlassTabBar">
         <attr name="glassTabEntries" format="reference" />
     </declare-styleable>
+
+    <!-- 现成小部件：玻璃标签页（Material TabLayout 那一类，entries 指向 string-array） -->
+    <declare-styleable name="LiquidGlassTabLayout">
+        <attr name="glassTabEntries" />
+        <!-- fixed：标签平分宽度；scrollable：按内容宽度排开，放不下时横向滑动 -->
+        <attr name="glassTabMode" format="enum">
+            <enum name="fixed" value="0" />
+            <enum name="scrollable" value="1" />
+        </attr>
+    </declare-styleable>
+
+    <!-- 现成小部件：玻璃 Chip（文字 / 选中沿用 android 命名空间属性） -->
+    <declare-styleable name="LiquidGlassChip">
+        <attr name="android:text" />
+        <attr name="android:textSize" />
+        <!-- 显式指定后前景不再跟随背景明暗自动切换 -->
+        <attr name="android:textColor" />
+        <attr name="android:checkable" />
+        <attr name="android:checked" />
+        <attr name="glassChipIcon" format="reference" />
+        <attr name="glassCloseIconVisible" format="boolean" />
+        <!-- 选中时前置位置显示对勾（默认 true） -->
+        <attr name="glassCheckedIconVisible" format="boolean" />
+        <!-- 选中时的玻璃本体颜色，alpha 即强度（默认 #660A84FF） -->
+        <attr name="glassCheckedTint" format="color" />
+    </declare-styleable>
+
+    <!-- 现成小部件：Chip 组（流式排布 + 单选 / 多选） -->
+    <declare-styleable name="LiquidGlassChipGroup">
+        <attr name="glassChipSpacingHorizontal" format="dimension" />
+        <attr name="glassChipSpacingVertical" format="dimension" />
+        <!-- 排成一行不换行（外面套 HorizontalScrollView） -->
+        <attr name="glassSingleLine" format="boolean" />
+        <attr name="glassSingleSelection" format="boolean" />
+        <!-- 至少保留一个选中 -->
+        <attr name="glassSelectionRequired" format="boolean" />
+        <!-- 下发给每个 chip 的背景来源 -->
+        <attr name="backdropSourceId" />
+    </declare-styleable>
 </resources>
