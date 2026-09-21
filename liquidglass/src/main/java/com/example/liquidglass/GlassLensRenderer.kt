@@ -98,6 +98,12 @@ internal class GlassLensRenderer {
                 return mix(b, a, h) - k * h * (1.0 - h);
             }
 
+            // content.eval 返回预乘 alpha 颜色。色散让三个通道从不同位置取样，
+            // 因此每个通道必须按自身采样的 alpha 转回直通色，不能共用某一个通道的 alpha。
+            float unpremulChannel(half channel, half alpha) {
+                return alpha > 0.001 ? float(channel) / float(alpha) : 0.0;
+            }
+
             // 斜面 / 法线 / 高光用透镜形状（平边已延伸出去，不产生边缘）
             float lensSDF(float2 p) {
                 float d = sdRoundedBox4(p - shape1L.xy, shape1L.zw, radii1);
@@ -186,7 +192,9 @@ internal class GlassLensRenderer {
                 cR = clamp(cR, lo, hi);
                 cG = clamp(cG, lo, hi);
                 cB = clamp(cB, lo, hi);
-                float3 col;
+                half4 sampleR;
+                half4 sampleG;
+                half4 sampleB;
                 if (rimSoft > 0.01 && slope > 0.001) {
                     // 边缘柔化：折射带内沿法线方向抹匀（宽度随斜面深度增长），
                     // 压缩带从一条硬线变成一段渐变，采样点仍钳在内容区内
@@ -197,18 +205,27 @@ internal class GlassLensRenderer {
                     float2 cG2 = clamp(cG + sm, lo, hi);
                     float2 cB1 = clamp(cB - sm, lo, hi);
                     float2 cB2 = clamp(cB + sm, lo, hi);
-                    col = float3(
-                        (content.eval(cR).r + content.eval(cR1).r + content.eval(cR2).r) / 3.0,
-                        (content.eval(cG).g + content.eval(cG1).g + content.eval(cG2).g) / 3.0,
-                        (content.eval(cB).b + content.eval(cB1).b + content.eval(cB2).b) / 3.0
-                    );
+                    // 连 alpha 一起平均，保持半透明背景在软化前后的预乘关系正确。
+                    sampleR = (content.eval(cR) + content.eval(cR1) + content.eval(cR2)) / 3.0;
+                    sampleG = (content.eval(cG) + content.eval(cG1) + content.eval(cG2)) / 3.0;
+                    sampleB = (content.eval(cB) + content.eval(cB1) + content.eval(cB2)) / 3.0;
                 } else {
-                    col = float3(
-                        content.eval(cR).r,
-                        content.eval(cG).g,
-                        content.eval(cB).b
-                    );
+                    sampleR = content.eval(cR);
+                    sampleG = content.eval(cG);
+                    sampleB = content.eval(cB);
                 }
+
+                // 中心（绿色）折射采样定义这个像素的背景覆盖率；alpha=0 的透明黑
+                // 因而保持透明，不会再以形状覆盖率 cov 被输出成不透明黑色。
+                float sourceAlpha = float(sampleG.a);
+                if (sourceAlpha <= 0.001) {
+                    return half4(0.0);
+                }
+                float3 col = float3(
+                    unpremulChannel(sampleR.r, sampleR.a),
+                    unpremulChannel(sampleG.g, sampleG.a),
+                    unpremulChannel(sampleB.b, sampleB.a)
+                );
 
                 // 饱和度（合并进同一 pass）；提饱和端走 vibrancy 曲线：低饱和
                 // 像素多提、高饱和像素少提、极亮像素保护，避免线性提饱和把浓色
@@ -269,7 +286,9 @@ internal class GlassLensRenderer {
                 col += float3(spec);
 
                 col = clamp(col, float3(0.0), float3(1.0));
-                return half4(half3(col * cov), half(cov));
+                // 输出保持预乘 alpha，既保留抗锯齿覆盖率，也不会把透明背景的黑色 RGB 变为实色。
+                float outAlpha = sourceAlpha * cov;
+                return half4(half3(col * outAlpha), half(outAlpha));
             }
         """
     }
