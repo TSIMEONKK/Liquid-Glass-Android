@@ -1108,7 +1108,8 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
-        // 两个入口：BottomSheetDialog 和 AlertDialog，都是跨 window 采背景
+        // 三个入口：BottomSheetDialog 和 AlertDialog 都是跨 window 采背景；Toast 自带 window，
+        // 叠在弹层上面（弹层里也有一个 Toast 入口）
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1147,7 +1148,7 @@ class ProfessionalDemoActivity : AppCompatActivity() {
     }
 
     /**
-     * 玻璃 Toast：挂在 Activity 的 content view 上，背景就是当前场景。
+     * 玻璃 Toast：自带 window，叠在 Activity 和打开着的弹层上面，背景是底下各层 window 拼出的画面。
      * 底部抬高到场景条和设置按钮之上；彩色图标（应用图标）不跟文字染色
      */
     private fun showGlassToast(text: CharSequence, icon: Drawable? = null) {
@@ -1217,6 +1218,31 @@ class ProfessionalDemoActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER
                 setShadowLayer(6f, 0f, 1f, Color.BLACK)
                 setPadding(0, dp(10), 0, 0)
+            })
+            // 从弹层里弹 Toast：Toast 的 window 叠在弹层之上，折射的是弹层和它底下的场景
+            addView(TextView(this@ProfessionalDemoActivity).apply {
+                text = getString(R.string.sheet_toast_open)
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = dpF(20)
+                    setColor(0x33FFFFFF)
+                }
+                setPadding(dp(20), dp(10), dp(20), dp(10))
+                setOnClickListener {
+                    showGlassToast(
+                        getString(R.string.sheet_toast_text),
+                        applicationInfo.loadIcon(packageManager)
+                    )
+                }
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(18)
             })
         }, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,

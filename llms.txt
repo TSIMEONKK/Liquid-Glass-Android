@@ -237,18 +237,22 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   `app:glassListStyle` (`merged|separated`), `app:glassItemSpacing`, `app:cornerRadius`,
   `app:backdropSourceId`. The group owns the vertical gap between rows and overwrites the
   children's `topMargin`.
-- `LiquidGlassToast` — glass toast drawn inside the activity window, not in a `Toast`
-  window (a `Toast` window cannot refract the app beneath it, and custom toast views are
-  deprecated since API 30). `LiquidGlassToast.makeText(context, text | resId, duration)`
-  needs an Activity context (throws otherwise); `LENGTH_SHORT` / `LENGTH_LONG` equal
-  `Toast`'s constants (2 s / 3.5 s), `durationMillis` overrides. Chainable `setText`,
-  `setIcon(drawable)` / `setIconResource(id)` (tinted like the text unless
+- `LiquidGlassToast` — glass toast in its own non-touchable, non-focusable app window,
+  stacked above the activity and any open dialog / bottom sheet (not a `Toast` window: a
+  `Toast` window cannot refract the app, and custom toast views are deprecated since
+  API 30). Its backdrop is composed from the app's windows beneath it (activity, dialogs,
+  their dim); a dialog opened while it is showing does not cover it; it sits above the soft
+  keyboard. No `backdropSource` setup is needed.
+  `LiquidGlassToast.makeText(context, text | resId, duration)` needs an Activity context
+  (a dialog's context also resolves; throws otherwise); `LENGTH_SHORT` / `LENGTH_LONG`
+  equal `Toast`'s constants (2 s / 3.5 s), `durationMillis` overrides. Chainable
+  `setText`, `setIcon(drawable)` / `setIconResource(id)` (tinted like the text unless
   `setIconTintEnabled(false)` — use that for the app icon), `setGravity(gravity, xOffset,
-  yOffset)` (default bottom-centre, 64dp up, system-bar insets added automatically),
+  yOffset)` (default bottom-centre, 64dp up, measured from the system bars / keyboard),
   `setDuration`, `setTextColor`, then `show()`. `cancel()` fades it out; static
   `cancelCurrent()`. Only one is shown at a time — `show()` replaces the previous toast.
-  It does not intercept touches. Exposes `glass` (a `LiquidGlassView`, tune lens params
-  there), `textView`, `imageView`.
+  It does not intercept touches and is removed when the activity is destroyed. Exposes
+  `glass` (a `LiquidGlassView`, tune lens params there), `textView`, `imageView`.
 - `LiquidGlassDialogBuilder` — a `MaterialAlertDialogBuilder` (not a `LiquidGlassView`
   subclass) that swaps the dialog panel into a `LiquidGlassView` on the first pre-draw:
   `backdropSource` is wired to the activity content view, backgrounds are cleared, the

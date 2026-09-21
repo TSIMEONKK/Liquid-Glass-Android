@@ -1,10 +1,13 @@
 /**
- * 玻璃 Toast：画在 Activity window 里的短消息条
+ * 玻璃 Toast：自带一个 window 的短消息条，压在 Activity 和它打开的弹层之上
  *
- * 不走系统 [Toast]：Toast 是独立 window，玻璃在里面采不到下方的界面；而且 API 30 起
- * 自定义 Toast 视图已废弃、应用在后台时不再显示。这里把玻璃直接挂到 Activity 的
- * content view 上，背景就是它底下的整个界面，淡入、停留、淡出后自动移除，不拦截触摸。
- * 同一时刻只保留一条，再次 show 会顶掉上一条。
+ * 不走系统 [Toast]：Toast window 里的玻璃采不到下面的界面，而且 API 30 起自定义 Toast
+ * 视图已废弃、应用在后台时不再显示。这里用 Activity 的 WindowManager 加一个不可触摸、
+ * 不抢焦点的应用 window，和系统 Toast 一样盖在 Dialog / BottomSheetDialog 上面；之后再
+ * 打开的弹层盖过来时，把自己挪回最上层。玻璃的背景是底下各层 window（Activity、弹层
+ * 及其变暗层）按层叠顺序拼出来的画面（见 [WindowStackBackdrop]）。
+ * 淡入、停留、淡出后自动移除，Activity 销毁时随之移除；同一时刻只保留一条，
+ * 再次 show 会顶掉上一条。
  *
  * API 沿用 Toast 的习惯：
  * ```kotlin
@@ -17,22 +20,30 @@
  * ```java
  * LiquidGlassToast.makeText(activity, "Saved", LiquidGlassToast.LENGTH_SHORT).show();
  * ```
- * 需要 Activity 的 Context：Fragment 里传 requireActivity()，View 里传 view.context。
+ * 需要 Activity 的 Context：Fragment 里传 requireActivity()，View 里传 view.context，
+ * Dialog / BottomSheetDialog 里传它自己的 context（会顺着找到所属的 Activity）。
  */
 package com.example.liquidglass
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
+import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.util.Log
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -43,8 +54,6 @@ import android.widget.Toast
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 
 class LiquidGlassToast private constructor(private val activity: Activity) {
 
@@ -71,8 +80,60 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
 
     private val handler = Handler(Looper.getMainLooper())
     private val hideRunnable = Runnable { cancel() }
-    private var host: FrameLayout? = null
     private var dismissing = false
+
+    private val windowManager: WindowManager = activity.windowManager
+
+    /** window 的根视图：与屏幕同宽，高度包住玻璃，上下各多留一段给滑入动画 */
+    private val frame = FrameLayout(activity)
+
+    private val windowParams = WindowManager.LayoutParams().apply {
+        type = WindowManager.LayoutParams.TYPE_APPLICATION
+        // 不是全屏 window：全屏的应用 window 会被拿去决定状态栏 / 导航栏的深浅样式
+        width = WindowManager.LayoutParams.MATCH_PARENT
+        height = WindowManager.LayoutParams.WRAP_CONTENT
+        format = PixelFormat.TRANSLUCENT
+        // ALT_FOCUSABLE_IM 与 NOT_FOCUSABLE 同时设：仍不抢焦点，但层级排在输入法之下、收得到输入法的
+        // insets，键盘弹出时落在键盘上方（只设 NOT_FOCUSABLE 会压在键盘上，玻璃又采不到键盘）。
+        // NO_LIMITS：偏移小于动画余量时，window 可以伸出可用区域，玻璃仍落在要求的位置
+        flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // window 动画是 SurfaceFlinger 上的变换，玻璃会按动画前的位置采样；进出场在 view 里做
+        windowAnimations = 0
+        title = "LiquidGlassToast"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // 给系统栏和输入法让位：贴底的 Toast 在键盘弹出时落在键盘上方
+            fitInsetsTypes = WindowInsets.Type.systemBars() or WindowInsets.Type.ime()
+        }
+    }
+
+    /** 玻璃的背景：底下各层 window 按层叠顺序拼出的画面 */
+    private val backdrop = WindowStackBackdrop(activity)
+
+    /** 挪到最上层时 window 会先拆下再加回，这期间的 detach 不算消失 */
+    private var raising = false
+    private var raisePending = false
+    private var raiseCount = 0
+    private val raiseRunnable = Runnable { raise() }
+
+    /** 每帧检查一次有没有后打开的弹层盖到上面 */
+    private val coverCheck = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (frame.parent == null) return
+            if (!raisePending && !dismissing && raiseCount < MAX_RAISES &&
+                AppWindows.isCovered(frame)
+            ) {
+                // 不在帧回调里增删 window
+                raisePending = true
+                handler.post(raiseRunnable)
+            }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
     init {
         // 默认斜面是给大面板定的，一条 44dp 高的消息条按高度收一档，折射取斜面的一半
@@ -88,6 +149,7 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
             isClickable = false
             isFocusable = false
             minimumHeight = dp(44)
+            backdropSource = backdrop
         }
         val row = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -108,12 +170,12 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
         glass.addView(row, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER
         ))
-        glass.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        frame.addView(glass)
+        frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {}
             override fun onViewDetachedFromWindow(v: View) {
-                // Activity 先销毁了：定时器和静态引用都不该再留着
-                handler.removeCallbacks(hideRunnable)
-                if (current === this@LiquidGlassToast) current = null
+                // window 没了（正常收起，或 Activity 先一步销毁）：定时器和各种监听都不该再留着
+                if (!raising) releaseWindow()
             }
         })
         applyAutoColors(glass.isOverLightBackground)
@@ -143,7 +205,10 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
         return this
     }
 
-    /** 与 [Toast.setGravity] 同义：偏移量为 px，从 gravity 指定的那条边算起 */
+    /**
+     * 与 [Toast.setGravity] 同义：偏移量为 px，从 gravity 指定的那条边算起
+     * （系统栏和输入法占住的部分不算在内）
+     */
     fun setGravity(gravity: Int, xOffset: Int, yOffset: Int): LiquidGlassToast {
         this.gravity = gravity
         this.xOffset = xOffset
@@ -166,27 +231,29 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
     }
 
     fun show(): LiquidGlassToast {
-        val host = this.host ?: resolveHost().also { this.host = it }
-        // 边距要按已布局的 host 算（伸进系统栏多少）；还没布局就等一帧
-        if (!host.isLaidOut) {
-            host.post { show() }
-            return this
-        }
+        // 已销毁的 Activity 加不了 window
+        if (activity.isDestroyed) return this
         current?.takeIf { it !== this }?.cancel(animate = false)
         current = this
         handler.removeCallbacks(hideRunnable)
         dismissing = false
+        raiseCount = 0
 
-        val baseY = applyLayoutParams(host)
-        if (glass.parent == null) {
-            host.addView(glass)
-            animateIn(baseY)
+        applyLayout()
+        syncSecureFlag()
+        if (frame.parent == null) {
+            if (!addWindow()) {
+                if (current === this) current = null
+                return this
+            }
+            animateIn()
         } else {
+            windowManager.updateViewLayout(frame, windowParams)
             glass.animate().cancel()
             glass.alpha = 1f
             glass.scaleX = 1f
             glass.scaleY = 1f
-            glass.translationY = baseY
+            glass.translationY = 0f
         }
         glass.announceForAccessibility(textView.text)
         handler.postDelayed(hideRunnable, effectiveDurationMillis())
@@ -199,9 +266,9 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
     private fun cancel(animate: Boolean) {
         handler.removeCallbacks(hideRunnable)
         if (current === this) current = null
-        if (glass.parent == null) return
+        if (frame.parent == null) return
         if (!animate || !glass.isAttachedToWindow) {
-            detach()
+            removeWindow()
             return
         }
         if (dismissing) return
@@ -213,14 +280,8 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
             .setDuration(EXIT_MS)
             .setInterpolator(AccelerateInterpolator(1.2f))
             .setUpdateListener { glass.invalidate() }
-            .withEndAction { detach() }
+            .withEndAction { removeWindow() }
             .start()
-    }
-
-    private fun detach() {
-        glass.animate().cancel()
-        (glass.parent as? ViewGroup)?.removeView(glass)
-        dismissing = false
     }
 
     private fun effectiveDurationMillis(): Long = when {
@@ -230,76 +291,176 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
     }
 
     /**
-     * 按 gravity / 偏移生成布局参数；host 铺到系统栏底下时（edge-to-edge），
-     * 把被系统栏盖住的那段补进 margin。返回竖直居中时用的 translationY 基线
+     * 按 gravity / 偏移摆放：竖直方向交给 window（WMS 给系统栏和输入法让位后，偏移从让出来的
+     * 那条边算起），水平方向在与屏幕同宽的 window 里摆玻璃
      */
-    private fun applyLayoutParams(host: FrameLayout): Float {
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, gravity
-        )
+    private fun applyLayout() {
+        val decor = activity.window.decorView
+        frame.layoutDirection = decor.layoutDirection
         val edge = dp(16)
+        val pad = dp(SLIDE_DP)
+        val lp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT
+        )
         lp.leftMargin = edge
         lp.rightMargin = edge
-        var baseY = 0f
-        val (coveredTop, coveredBottom) = coveredInsets(host)
-        when (gravity and Gravity.VERTICAL_GRAVITY_MASK) {
-            Gravity.TOP -> lp.topMargin = yOffset + coveredTop
-            Gravity.BOTTOM -> lp.bottomMargin = yOffset + coveredBottom
-            else -> baseY = yOffset.toFloat()
-        }
-        val absolute = Gravity.getAbsoluteGravity(gravity, host.layoutDirection)
-        when (absolute and Gravity.HORIZONTAL_GRAVITY_MASK) {
-            Gravity.LEFT -> lp.leftMargin = edge + xOffset
-            Gravity.RIGHT -> lp.rightMargin = edge + xOffset
-            else -> glass.translationX = xOffset.toFloat()
+        lp.topMargin = pad
+        lp.bottomMargin = pad
+        glass.translationX = 0f
+        when (Gravity.getAbsoluteGravity(gravity, decor.layoutDirection) and Gravity.HORIZONTAL_GRAVITY_MASK) {
+            Gravity.LEFT -> {
+                lp.gravity = Gravity.LEFT
+                lp.leftMargin = edge + xOffset
+            }
+            Gravity.RIGHT -> {
+                lp.gravity = Gravity.RIGHT
+                lp.rightMargin = edge + xOffset
+            }
+            else -> {
+                lp.gravity = Gravity.CENTER_HORIZONTAL
+                glass.translationX = xOffset.toFloat()
+            }
         }
         glass.layoutParams = lp
-        return baseY
+
+        // 玻璃上下各有 pad 的余量：贴边的两种 gravity 把它从偏移里扣掉，玻璃才落在要求的位置
+        when (gravity and Gravity.VERTICAL_GRAVITY_MASK) {
+            Gravity.TOP -> {
+                windowParams.gravity = Gravity.TOP
+                windowParams.y = yOffset - pad
+            }
+            Gravity.BOTTOM -> {
+                windowParams.gravity = Gravity.BOTTOM
+                windowParams.y = yOffset - pad
+            }
+            else -> {
+                windowParams.gravity = Gravity.CENTER_VERTICAL
+                windowParams.y = yOffset
+            }
+        }
     }
 
-    /** host 顶边伸进状态栏、底边伸进导航栏的像素数 */
-    private fun coveredInsets(host: View): Pair<Int, Int> {
+    /** Activity 禁止截屏时 Toast 也禁：玻璃里折射的就是 Activity 的内容 */
+    private fun syncSecureFlag() {
+        val secure = WindowManager.LayoutParams.FLAG_SECURE
+        windowParams.flags = if (activity.window.attributes.flags and secure != 0) {
+            windowParams.flags or secure
+        } else {
+            windowParams.flags and secure.inv()
+        }
+    }
+
+    private fun addWindow(): Boolean {
+        try {
+            windowManager.addView(frame, windowParams)
+        } catch (e: RuntimeException) {
+            // BadTokenException 等：Activity 已经不在了
+            Log.w(TAG, "Unable to add the toast window", e)
+            return false
+        }
+        // 背景来源不挂载，尺寸手动铺满 Activity 所在的屏幕范围（向外折射的采样边界要用）
         val decor = activity.window.decorView
-        val insets = ViewCompat.getRootWindowInsets(decor)
-            ?.getInsets(WindowInsetsCompat.Type.systemBars())
-            ?: return 0 to 0
-        val loc = IntArray(2)
-        host.getLocationInWindow(loc)
-        val top = (insets.top - loc[1]).coerceAtLeast(0)
-        val bottom = (loc[1] + host.height - (decor.height - insets.bottom)).coerceAtLeast(0)
-        return top to bottom
+        val location = IntArray(2)
+        decor.getLocationOnScreen(location)
+        backdrop.layout(0, 0, location[0] + decor.width, location[1] + decor.height)
+        backdrop.ownWindow = frame
+        registerLifecycle()
+        Choreographer.getInstance().postFrameCallback(coverCheck)
+        return true
     }
 
-    private fun animateIn(baseY: Float) {
+    /**
+     * 后打开的弹层盖到了上面（同一 Activity 里新加的 window 总在最上层）：
+     * 拆下 window 重新加一次，回到最上层
+     */
+    private fun raise() {
+        raisePending = false
+        if (frame.parent == null || dismissing) return
+        raiseCount++
+        raising = true
+        try {
+            windowManager.removeViewImmediate(frame)
+            syncSecureFlag()
+            windowManager.addView(frame, windowParams)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Unable to re-add the toast window", e)
+        } finally {
+            raising = false
+        }
+        // 加不回去（Activity 正在销毁）：当作已经收起
+        if (frame.parent == null) releaseWindow()
+    }
+
+    private fun removeWindow() {
+        if (frame.parent != null) {
+            try {
+                windowManager.removeViewImmediate(frame)
+            } catch (e: RuntimeException) {
+                // Activity 销毁时系统已经把它移走了
+            }
+        }
+        releaseWindow()
+    }
+
+    /** window 拆掉之后的收尾（可重复调用） */
+    private fun releaseWindow() {
+        handler.removeCallbacks(hideRunnable)
+        handler.removeCallbacks(raiseRunnable)
+        raisePending = false
+        Choreographer.getInstance().removeFrameCallback(coverCheck)
+        unregisterLifecycle()
+        backdrop.ownWindow = null
+        glass.animate().cancel()
+        dismissing = false
+        if (current === this) current = null
+    }
+
+    /** Activity 销毁前先把 window 拿掉，否则系统会报 window 泄漏 */
+    private fun registerLifecycle() {
+        if (lifecycleCallbacks != null) return
+        val callbacks = object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityDestroyed(a: Activity) {
+                if (a === activity) cancel(animate = false)
+            }
+
+            override fun onActivityCreated(a: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityStarted(a: Activity) {}
+            override fun onActivityResumed(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivityStopped(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, outState: Bundle) {}
+        }
+        activity.application.registerActivityLifecycleCallbacks(callbacks)
+        lifecycleCallbacks = callbacks
+    }
+
+    private fun unregisterLifecycle() {
+        val callbacks = lifecycleCallbacks ?: return
+        activity.application.unregisterActivityLifecycleCallbacks(callbacks)
+        lifecycleCallbacks = null
+    }
+
+    private fun animateIn() {
         // 从所在的那条边滑进来一点：底部向上、顶部向下、居中向上
         val slide = when (gravity and Gravity.VERTICAL_GRAVITY_MASK) {
-            Gravity.TOP -> -dpF(24f)
-            else -> dpF(24f)
+            Gravity.TOP -> -dpF(SLIDE_DP.toFloat())
+            else -> dpF(SLIDE_DP.toFloat())
         }
         glass.alpha = 0f
         glass.scaleX = ENTER_SCALE
         glass.scaleY = ENTER_SCALE
-        glass.translationY = baseY + slide
+        glass.translationY = slide
         glass.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
-            .translationY(baseY)
+            .translationY(0f)
             .setDuration(ENTER_MS)
             .setInterpolator(DecelerateInterpolator(1.6f))
             // 位移中每帧重录：玻璃按屏幕坐标采背景，不重绘的话折射会拖着走
             .setUpdateListener { glass.invalidate() }
             .withEndAction(null)
             .start()
-    }
-
-    /** content view 一般就是 FrameLayout；不是的话退到 DecorView（它一定是） */
-    private fun resolveHost(): FrameLayout {
-        val decor = activity.window.decorView
-        val content = decor.findViewById<View>(android.R.id.content)
-        return content as? FrameLayout
-            ?: decor as? FrameLayout
-            ?: throw IllegalStateException("LiquidGlassToast: no FrameLayout host in the activity window")
     }
 
     private fun applyIconTint() {
@@ -338,12 +499,19 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
         const val LENGTH_SHORT = Toast.LENGTH_SHORT
         const val LENGTH_LONG = Toast.LENGTH_LONG
 
+        private const val TAG = "LiquidGlassToast"
         private const val SHORT_MS = 2000L
         private const val LONG_MS = 3500L
         private const val ENTER_MS = 260L
         private const val EXIT_MS = 180L
         private const val ENTER_SCALE = 0.94f
         private const val EXIT_SCALE = 0.94f
+
+        /** 滑入距离（dp），也是 window 在玻璃上下多留的余量 */
+        private const val SLIDE_DP = 24
+
+        /** 一条 Toast 最多挪几次到最上层：防止和别的同样抢最上层的 window 来回顶 */
+        private const val MAX_RAISES = 8
 
         private var current: LiquidGlassToast? = null
 
@@ -373,8 +541,8 @@ class LiquidGlassToast private constructor(private val activity: Activity) {
                 c = (c as? ContextWrapper)?.baseContext
             }
             throw IllegalArgumentException(
-                "LiquidGlassToast needs an Activity context: the toast is drawn inside the " +
-                    "activity window so the glass can refract the content beneath it"
+                "LiquidGlassToast needs an Activity context: the toast window is attached to the " +
+                    "activity so the glass can refract the activity and its dialogs beneath it"
             )
         }
     }
