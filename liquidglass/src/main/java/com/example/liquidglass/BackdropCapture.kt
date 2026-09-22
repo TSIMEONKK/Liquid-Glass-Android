@@ -23,8 +23,16 @@
  * **嵌套采样只允许一层。** 采样时若录制区盖到了别的玻璃（邻居离得比采样外扩还近），
  * 硬件画布会顺手重录那块玻璃的显示列表，它的 onDraw 又去采样父容器、又画到自己的
  * 邻居……层数随互相靠近的玻璃数指数增长（15 块动态玻璃一帧要录上万次）。所以一旦
- * 发现自己已经处在别的玻璃的采样里，就把子树中其余的玻璃一并藏掉：这一层录出来的
+ * 发现自己已经处在别的玻璃的采样里，就把 host 下其余的玻璃一并藏掉：这一层录出来的
  * 邻居玻璃，其采样区里只剩背景，没有别的玻璃。玻璃本来就不该折射玻璃，视觉上无损。
+ *
+ * 只藏 host 的**直接子级**里的玻璃，不钻进中间容器：host 走的是公开的 [View.draw]，不会被
+ * 记成"已刷新"；中间容器却会在录制中被顺带刷新——它因为里面玻璃的 invalidate 正等着
+ * 刷新，框架刷新时跳过不可见的子级、把容器标成已刷新，被藏的玻璃挂着的那次重绘就丢了，
+ * 之后它自己的 invalidate 也不再往上传，从此冻在旧的一帧（ChipGroup / ListGroup 里的
+ * 玻璃都会这样）。而容器不脏时画的是它缓存的显示列表，藏里面的玻璃本来也不起作用。
+ * 容器里的玻璃于是可能在嵌套里被重录一次，它自己的采样照样只藏它那个 host 的直接子级；
+ * 采样路径上的祖先链由 [drawLevel] 逐层用公开 draw 画、把分支藏掉，不会成环。
  */
 package com.example.liquidglass
 
@@ -100,19 +108,15 @@ internal class BackdropCapture {
         }
     }
 
-    /** 把 [root] 子树里除 [except] 之外的玻璃都临时藏起来（藏掉的整棵子树都不再进入） */
-    private fun hideOtherGlass(root: View, except: View) {
-        if (root !is ViewGroup) return
-        for (i in 0 until root.childCount) {
-            val child = root.getChildAt(i)
-            if (child === except) continue
-            if (child is LiquidGlassView) {
-                if (child.visibility == View.VISIBLE) {
-                    child.setTransitionVisibility(View.INVISIBLE)
-                    nestedHidden.add(child)
-                }
-            } else {
-                hideOtherGlass(child, except)
+    /** 把 [host] 的直接子级里（除 [except] 外）的玻璃临时藏起来；不往容器里钻，原因见类注释 */
+    private fun hideOtherGlass(host: View, except: View) {
+        if (host !is ViewGroup) return
+        for (i in 0 until host.childCount) {
+            val child = host.getChildAt(i)
+            if (child === except || child !is LiquidGlassView) continue
+            if (child.visibility == View.VISIBLE) {
+                child.setTransitionVisibility(View.INVISIBLE)
+                nestedHidden.add(child)
             }
         }
     }

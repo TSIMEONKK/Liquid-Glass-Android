@@ -191,7 +191,7 @@
     <string name="sheet_dialog_title">Liquid Glass Dialog</string>
     <string name="sheet_dialog_body">A Material dialog whose whole panel sits inside a LiquidGlassView.</string>
     <string name="sheet_toast_open">Show glass toast</string>
-    <string name="sheet_toast_text">Glass toast · drawn inside the activity window</string>
+    <string name="sheet_toast_text">Glass toast · its own window, above sheets and dialogs</string>
     <string name="simulate_api_label">Simulate API Level</string>
     <string name="api_cap_device">Device</string>
     <string name="simulate_api_desc">Clamps the pipeline tier to preview older devices: 36+ AGSL color filter/blend extras · 33–35 lens · 31–32 classic GPU · ≤30 CPU. The overlay shows real → effective API.</string>
@@ -236,6 +236,15 @@
     <string name="widgets_toast_button">Clicked: %1$s</string>
     <string name="widgets_toast_tab">Tab: %1$s</string>
     <string name="widgets_toast_fab">FAB clicked</string>
+    <string name="widgets_chip_explore">Explore</string>
+    <string name="widgets_chip_photos">Photos</string>
+    <string name="widgets_chip_videos">Videos</string>
+    <string name="widgets_chip_music">Music</string>
+    <string name="widgets_chip_paris">Paris</string>
+    <string name="widgets_toast_chip">Chip: %1$s</string>
+    <string name="widgets_toast_chip_removed">Removed: %1$s</string>
+    <string name="widgets_toast_filters">Filters: %1$s</string>
+    <string name="widgets_filters_none">none</string>
 
     <!-- List Scene (M3 list items, merged / separated) -->
     <string name="group_style_merged">Merged</string>
@@ -256,6 +265,11 @@
     <string name="group_bt_detail">Pixel Buds Pro · 74%\nGalaxy Watch · 52%</string>
     <string name="group_notif_detail">Muted: Mail, Slack, Weather\nDo Not Disturb: 23:00 – 07:00</string>
     <string name="group_display_detail">Brightness follows ambient light.\nRefresh rate: Smooth (up to 90 Hz)</string>
+    <string name="group_custom_caption">Custom content: any view inside a LiquidGlassListItem</string>
+    <string name="group_custom_airplane">Airplane mode</string>
+    <string name="group_custom_airplane_on">Airplane mode on</string>
+    <string name="group_custom_airplane_off">Airplane mode off</string>
+    <string name="group_custom_brightness">Brightness</string>
 
     <!-- Glass Tint (drawer card) -->
     <string name="section_glass_tint">Glass Tint</string>

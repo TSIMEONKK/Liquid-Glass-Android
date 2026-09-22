@@ -14,6 +14,10 @@ android {
     defaultConfig {
         minSdk = 24
 
+        // compileOnly 依赖（appcompat / material / viewpager2）的 -dontwarn：使用方没引入它们、
+        // 又开了 R8 时，引用它们的类（DialogBuilder / TabLayoutMediator）不会让构建报缺类
+        consumerProguardFiles("consumer-rules.pro")
+
         // NDK 原生模糊/色差加速（CPU 管线）
         ndk {
             // 同时产出 32/64 位 ARM 与 x86 模拟器所需的原生库。
@@ -61,6 +65,10 @@ dependencies {
     // 要用玻璃弹窗的话，使用方自己引入这两个库即可。
     compileOnly(libs.androidx.appcompat)
     compileOnly(libs.material)
+
+    // 只有 LiquidGlassTabLayoutMediator 用到 ViewPager2，同样 compileOnly：
+    // 用它和 ViewPager2 联动的使用方本来就依赖 viewpager2
+    compileOnly(libs.androidx.viewpager2)
 }
 
 // JitPack 发布配置：
@@ -74,8 +82,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.QWEA0"
                 artifactId = "liquidglass"
-                // develop 已包含 2.0.9 的独立发布，合并较早的 main 时不回退版本号。
-                version = "2.0.9"
+                version = "2.0.11"
             }
         }
     }

@@ -65,6 +65,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.drawerlayout.widget.DrawerLayout
+import androidx.recyclerview.widget.RecyclerView
+import androidx.viewpager2.widget.ViewPager2
 import com.example.liquidglass.demo.R
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -233,6 +235,18 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         private const val COLOR_TEXT_DIM = 0xFF8E8E93.toInt() // 次要文字
         private const val COLOR_ACCENT = 0xFF007AFF.toInt()   // 强调色
         private const val COLOR_SEG_BG = 0xFFE9E9EB.toInt()   // 分段控件底
+
+        /** 色块背景（渐变起止色 + 标签）：滚动色块和小部件场景的翻页背景共用 */
+        private val COLOR_BANDS = listOf(
+            Triple(0xFFFF6B6B.toInt(), 0xFFC0392B.toInt(), "🌹 Red"),
+            Triple(0xFF4ECDC4.toInt(), 0xFF16A085.toInt(), "🌊 Cyan"),
+            Triple(0xFF45B7D1.toInt(), 0xFF2C3E90.toInt(), "💙 Blue"),
+            Triple(0xFFFFA07A.toInt(), 0xFFE67E22.toInt(), "🍊 Orange"),
+            Triple(0xFF98D8C8.toInt(), 0xFF27AE60.toInt(), "🌿 Green"),
+            Triple(0xFFF7DC6F.toInt(), 0xFFF39C12.toInt(), "⭐ Yellow"),
+            Triple(0xFFBB8FCE.toInt(), 0xFF8E44AD.toInt(), "💜 Purple"),
+            Triple(0xFF85C1E2.toInt(), 0xFF2980B9.toInt(), "☁️ Sky")
+        )
 
         /** 抽屉染色卡片的色板（名称 + 色相，取 iOS 系统色）；第一项是"取消染色" */
         private val TINT_SWATCHES = listOf(
@@ -1108,7 +1122,8 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
-        // 两个入口：BottomSheetDialog 和 AlertDialog，都是跨 window 采背景
+        // 三个入口：BottomSheetDialog 和 AlertDialog 都是跨 window 采背景；Toast 自带 window，
+        // 叠在弹层上面（弹层里也有一个 Toast 入口）
         root.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1147,7 +1162,7 @@ class ProfessionalDemoActivity : AppCompatActivity() {
     }
 
     /**
-     * 玻璃 Toast：挂在 Activity 的 content view 上，背景就是当前场景。
+     * 玻璃 Toast：自带 window，叠在 Activity 和打开着的弹层上面，背景是底下各层 window 拼出的画面。
      * 底部抬高到场景条和设置按钮之上；彩色图标（应用图标）不跟文字染色
      */
     private fun showGlassToast(text: CharSequence, icon: Drawable? = null) {
@@ -1217,6 +1232,31 @@ class ProfessionalDemoActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER
                 setShadowLayer(6f, 0f, 1f, Color.BLACK)
                 setPadding(0, dp(10), 0, 0)
+            })
+            // 从弹层里弹 Toast：Toast 的 window 叠在弹层之上，折射的是弹层和它底下的场景
+            addView(TextView(this@ProfessionalDemoActivity).apply {
+                text = getString(R.string.sheet_toast_open)
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = dpF(20)
+                    setColor(0x33FFFFFF)
+                }
+                setPadding(dp(20), dp(10), dp(20), dp(10))
+                setOnClickListener {
+                    showGlassToast(
+                        getString(R.string.sheet_toast_text),
+                        applicationInfo.loadIcon(packageManager)
+                    )
+                }
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(18)
             })
         }, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -2030,17 +2070,7 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             setPadding(0, dp(100), 0, dp(100))
         }
 
-        val blocks = listOf(
-            Triple(0xFFFF6B6B.toInt(), 0xFFC0392B.toInt(), "🌹 Red"),
-            Triple(0xFF4ECDC4.toInt(), 0xFF16A085.toInt(), "🌊 Cyan"),
-            Triple(0xFF45B7D1.toInt(), 0xFF2C3E90.toInt(), "💙 Blue"),
-            Triple(0xFFFFA07A.toInt(), 0xFFE67E22.toInt(), "🍊 Orange"),
-            Triple(0xFF98D8C8.toInt(), 0xFF27AE60.toInt(), "🌿 Green"),
-            Triple(0xFFF7DC6F.toInt(), 0xFFF39C12.toInt(), "⭐ Yellow"),
-            Triple(0xFFBB8FCE.toInt(), 0xFF8E44AD.toInt(), "💜 Purple"),
-            Triple(0xFF85C1E2.toInt(), 0xFF2980B9.toInt(), "☁️ Sky")
-        )
-        blocks.forEach { (from, to, label) ->
+        COLOR_BANDS.forEach { (from, to, label) ->
             val block = FrameLayout(this).apply {
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(160))
                 background = GradientDrawable(
@@ -2184,10 +2214,20 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         }
     }
 
-    /** 场景：现成小部件（LiquidGlassButton / LiquidGlassTabBar / LiquidGlassFab，全部库默认参数开箱展示） */
+    /**
+     * 场景：现成小部件（LiquidGlassTabBar / LiquidGlassTabLayout / LiquidGlassButton / LiquidGlassChip /
+     * LiquidGlassFab，全部库默认参数开箱展示）
+     *
+     * 背景是横向翻页的色块（ViewPager2），玻璃标签页用 LiquidGlassTabLayoutMediator 和它联动：
+     * 左右滑背景时玻璃滴跟着翻页进度走，点标签翻页。
+     */
     private fun buildWidgetsScene(): View {
         val root = FrameLayout(this)
-        root.addView(createColorScroll())
+        val pager = ViewPager2(this).apply { adapter = ColorPageAdapter(COLOR_BANDS) }
+        root.addView(pager, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
 
         // 顶部玻璃标签条：iOS 26 风格（图标+小字，玻璃滴指示可点可拖）
         val tabTitles = listOf(
@@ -2217,6 +2257,23 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             }
         }
         root.addView(tabBar)
+
+        // 标签条下面是玻璃标签页：可滑动模式，8 个颜色标签和翻页背景联动
+        val tabLayout = LiquidGlassTabLayout(this).apply {
+            enableDynamicBackground = true
+            tabMode = LiquidGlassTabLayout.MODE_SCROLLABLE
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.TOP
+                setMargins(dp(20), systemBarTop + dp(58 + 64 + 12), dp(20), 0)  // 标签条高 64dp
+            }
+        }
+        root.addView(tabLayout)
+        LiquidGlassTabLayoutMediator(tabLayout, pager) { tab, position ->
+            tab.text = COLOR_BANDS[position].third.substringAfter(' ')
+        }.attach()
 
         // 中央按钮：Regular / Clear 两种材质对比。
         // 注意必须直接挂在 root 下——玻璃捕获直接父容器，包一层透明
@@ -2252,6 +2309,54 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             }
         })
 
+        // 按钮下面一组玻璃 chip：操作 chip、三个可多选的筛选 chip、一个带关闭图标的输入 chip。
+        // 组是透明容器，背景来源由组下发（指向翻页背景）
+        val chipGroup = LiquidGlassChipGroup(this).apply {
+            enableDynamicBackground = true
+            backdropSource = pager
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER
+                topMargin = dp(170)
+                leftMargin = dp(20)
+                rightMargin = dp(20)
+            }
+        }
+        chipGroup.addView(LiquidGlassChip(this).apply {
+            text = getString(R.string.widgets_chip_explore)
+            setChipIconResource(R.drawable.ic_tab_explore)
+            setOnClickListener { showGlassToast(getString(R.string.widgets_toast_chip, text)) }
+        })
+        listOf(
+            R.string.widgets_chip_photos,
+            R.string.widgets_chip_videos,
+            R.string.widgets_chip_music
+        ).forEachIndexed { index, res ->
+            chipGroup.addView(LiquidGlassChip(this).apply {
+                text = getString(res)
+                isCheckable = true
+                isChecked = index == 0
+            })
+        }
+        chipGroup.addView(LiquidGlassChip(this).apply {
+            text = getString(R.string.widgets_chip_paris)
+            isCloseIconVisible = true
+            setOnCloseIconClickListener {
+                chipGroup.removeView(this)
+                showGlassToast(getString(R.string.widgets_toast_chip_removed, text))
+            }
+        })
+        chipGroup.setOnCheckedStateChangeListener { group, checkedIds ->
+            val names = checkedIds.mapNotNull { (group.findViewById<View>(it) as? LiquidGlassChip)?.text }
+            showGlassToast(getString(
+                R.string.widgets_toast_filters,
+                if (names.isEmpty()) getString(R.string.widgets_filters_none) else names.joinToString(", ")
+            ))
+        }
+        root.addView(chipGroup)
+
         // 左下圆形玻璃 FAB
         root.addView(LiquidGlassFab(this).apply {
             enableDynamicBackground = true
@@ -2276,6 +2381,7 @@ class ProfessionalDemoActivity : AppCompatActivity() {
     /**
      * 场景：列表 —— 每一行是独立的 [LiquidGlassListItem]，装在 [LiquidGlassListGroup] 里，
      * 两种排布可切换：合并（行贴边拼成一块面板，只有组外沿有透镜边缘）和分离（每行独立圆角卡片）。
+     * 中间一组用自带内容（contentView：开关、滑杆），行只负责按位置画玻璃形状。
      *
      * 组是透明容器，直接父容器采不到壁纸，所以背景由组统一下发到每一行（backdropSource）。
      * 不指向 root：root 里还有其他玻璃行，互相采样会套娃。
@@ -2395,6 +2501,62 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         ).forEach { group.addView(it, rowParams()) }
         groups += group
         column.addView(group, rowParams())
+
+        // 自带内容：行里放任意视图（开关、滑杆），行只负责按位置画玻璃形状
+        column.addView(TextView(this).apply {
+            text = getString(R.string.group_custom_caption)
+            textSize = 12f
+            setTextColor(0xB3FFFFFF.toInt())
+            setShadowLayer(6f, 0f, 1f, Color.BLACK)
+        }, rowParams().apply {
+            topMargin = dp(24)
+            bottomMargin = dp(8)
+            leftMargin = dp(4)
+        })
+        val custom = newGroup()
+        val airplaneSwitch = Switch(this).apply {
+            setOnCheckedChangeListener { _, on ->
+                showGlassToast(getString(
+                    if (on) R.string.group_custom_airplane_on else R.string.group_custom_airplane_off
+                ))
+            }
+        }
+        custom.addView(LiquidGlassListItem(this).apply {
+            contentView = LinearLayout(this@ProfessionalDemoActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(8), dp(12), dp(8))
+                addView(TextView(this@ProfessionalDemoActivity).apply {
+                    text = getString(R.string.group_custom_airplane)
+                    textSize = 16f
+                    setTextColor(Color.WHITE)
+                    setShadowLayer(8f, 0f, 2f, Color.BLACK)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(airplaneSwitch)
+            }
+            // 点整行也能拨开关
+            setOnClickListener { airplaneSwitch.toggle() }
+        }, rowParams())
+        custom.addView(LiquidGlassListItem(this).apply {
+            contentView = LinearLayout(this@ProfessionalDemoActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(12), dp(12), dp(12))
+                addView(ImageView(this@ProfessionalDemoActivity).apply {
+                    setImageResource(R.drawable.ic_cc_sun)
+                    setColorFilter(Color.WHITE)
+                    contentDescription = getString(R.string.group_custom_brightness)
+                }, LinearLayout.LayoutParams(dp(22), dp(22)))
+                addView(SeekBar(this@ProfessionalDemoActivity).apply {
+                    max = 100
+                    progress = 70
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(8)
+                })
+            }
+        }, rowParams())
+        groups += custom
+        column.addView(custom, rowParams())
 
         // 单独一行：四角全圆，不可展开
         val single = newGroup()
@@ -3425,5 +3587,36 @@ class ProfessionalDemoActivity : AppCompatActivity() {
             @Suppress("DEPRECATION")
             super.onBackPressed()
         }
+    }
+
+    /** 小部件场景的翻页背景：每页一整屏渐变色块，中间一行大字（给玻璃按钮折射） */
+    private class ColorPageAdapter(
+        private val bands: List<Triple<Int, Int, String>>
+    ) : RecyclerView.Adapter<ColorPageAdapter.Holder>() {
+
+        class Holder(val label: TextView) : RecyclerView.ViewHolder(label)
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+            val label = TextView(parent.context).apply {
+                // ViewPager2 要求每页铺满
+                layoutParams = RecyclerView.LayoutParams(
+                    RecyclerView.LayoutParams.MATCH_PARENT,
+                    RecyclerView.LayoutParams.MATCH_PARENT
+                )
+                gravity = Gravity.CENTER
+                textSize = 40f
+                setTextColor(Color.WHITE)
+                setShadowLayer(6f, 2f, 2f, Color.BLACK)
+            }
+            return Holder(label)
+        }
+
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            val (from, to, text) = bands[position]
+            holder.label.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(from, to))
+            holder.label.text = text
+        }
+
+        override fun getItemCount(): Int = bands.size
     }
 }

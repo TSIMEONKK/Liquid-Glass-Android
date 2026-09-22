@@ -191,7 +191,7 @@
     <string name="sheet_dialog_title">玻璃弹窗</string>
     <string name="sheet_dialog_body">Material 弹窗的整个面板套在 LiquidGlassView 里。</string>
     <string name="sheet_toast_open">弹一条玻璃 Toast</string>
-    <string name="sheet_toast_text">玻璃 Toast · 画在 Activity 的 window 里</string>
+    <string name="sheet_toast_text">玻璃 Toast · 自带 window，压在弹层和弹窗之上</string>
     <string name="simulate_api_label">模拟 API 级别</string>
     <string name="api_cap_device">跟随设备</string>
     <string name="simulate_api_desc">把管线分层钳制到指定级别，预览低版本机型效果：36+ AGSL 颜色滤镜/混合增强 · 33–35 透镜 · 31–32 经典 GPU · ≤30 CPU。悬浮层显示 实际 → 生效 API。</string>
@@ -236,6 +236,15 @@
     <string name="widgets_toast_button">点击了：%1$s</string>
     <string name="widgets_toast_tab">标签：%1$s</string>
     <string name="widgets_toast_fab">点击了 FAB</string>
+    <string name="widgets_chip_explore">探索</string>
+    <string name="widgets_chip_photos">照片</string>
+    <string name="widgets_chip_videos">视频</string>
+    <string name="widgets_chip_music">音乐</string>
+    <string name="widgets_chip_paris">巴黎</string>
+    <string name="widgets_toast_chip">Chip：%1$s</string>
+    <string name="widgets_toast_chip_removed">已移除：%1$s</string>
+    <string name="widgets_toast_filters">筛选：%1$s</string>
+    <string name="widgets_filters_none">无</string>
 
     <!-- 列表场景（M3 列表项，合并 / 分离） -->
     <string name="group_style_merged">合并</string>
@@ -256,6 +265,11 @@
     <string name="group_bt_detail">Pixel Buds Pro · 74%\nGalaxy Watch · 52%</string>
     <string name="group_notif_detail">已静音：邮件、Slack、天气\n勿扰：23:00 – 07:00</string>
     <string name="group_display_detail">亮度跟随环境光。\n刷新率：流畅（最高 90 Hz）</string>
+    <string name="group_custom_caption">自带内容：行里放任意视图</string>
+    <string name="group_custom_airplane">飞行模式</string>
+    <string name="group_custom_airplane_on">飞行模式已开启</string>
+    <string name="group_custom_airplane_off">飞行模式已关闭</string>
+    <string name="group_custom_brightness">亮度</string>
 
     <!-- 玻璃染色（抽屉卡片） -->
     <string name="section_glass_tint">玻璃染色</string>

@@ -682,6 +682,14 @@ open class LiquidGlassView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * 实际参与渲染的本体颜色，默认就是 [glassTint]。
+     * 子类钩子：带状态的小部件（比如选中的 chip）在这里换颜色，不占用使用方的 [glassTint]；
+     * 返回值变了要自己 [invalidate]
+     */
+    protected open val effectiveGlassTint: Int
+        get() = glassTint
+
     /** 无障碍渲染模式（AUTO 跟随系统「高对比度文字」自动退化为不透明材质） */
     var accessibilityMode = GlassAccessibilityMode.AUTO
         set(value) {
@@ -1633,7 +1641,7 @@ open class LiquidGlassView @JvmOverloads constructor(
             spec = spec,
             tint = if (adaptivePerPixel) 0 else currentTintColor(),
             adaptiveTint = adaptivePerPixel,
-            glassTint = glassTint,
+            glassTint = effectiveGlassTint,
             dim = material.dimAmount,
             saturation = saturation,
             press = press,
@@ -1682,7 +1690,7 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 暗部层次会比透镜管线平一些。
      */
     private fun drawGlassTintOverlay(canvas: Canvas) {
-        val tint = glassTint
+        val tint = effectiveGlassTint
         if (Color.alpha(tint) == 0) return
         tintOverlayPaint.color = tint
         canvas.drawPath(clipPath, tintOverlayPaint)
@@ -1809,7 +1817,8 @@ open class LiquidGlassView @JvmOverloads constructor(
         val base = if (over) 0xFFF2F2F6.toInt() else 0xFF2A2A2E.toInt()
         // 染色过的玻璃降级后仍保留色相，否则一开「减少透明度」整套配色就全灰了；
         // 混合比例压到 0.45 以内，不让任意颜色把对比度吃掉
-        opaquePaint.color = blendOpaque(base, glassTint, Color.alpha(glassTint) / 255f * 0.45f)
+        val tint = effectiveGlassTint
+        opaquePaint.color = blendOpaque(base, tint, Color.alpha(tint) / 255f * 0.45f)
         opaqueBorderPaint.color = if (over) 0x33000000 else 0x40FFFFFF
         val rect = RectF(0.75f, 0.75f, width - 0.75f, height - 0.75f)
         shapePath.reset()

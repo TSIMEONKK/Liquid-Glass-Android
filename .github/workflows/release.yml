@@ -30,8 +30,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 默认 packages 是 "tools platform-tools"，tools 已从 SDK 仓库下架，装它会直接失败
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install NDK and CMake
         run: |
