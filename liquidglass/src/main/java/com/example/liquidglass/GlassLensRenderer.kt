@@ -215,12 +215,9 @@ internal class GlassLensRenderer {
                     sampleB = content.eval(cB);
                 }
 
-                // 中心（绿色）折射采样定义这个像素的背景覆盖率；alpha=0 的透明黑
-                // 因而保持透明，不会再以形状覆盖率 cov 被输出成不透明黑色。
+                // 中心（绿色）折射采样定义透射背景的 alpha。背景为空时仍须继续：
+                // 玻璃材质本身的染色与高光是独立表面层，不能因采样透明而一并消失。
                 float sourceAlpha = float(sampleG.a);
-                if (sourceAlpha <= 0.001) {
-                    return half4(0.0);
-                }
                 float3 col = float3(
                     unpremulChannel(sampleR.r, sampleR.a),
                     unpremulChannel(sampleG.g, sampleG.a),
@@ -241,17 +238,23 @@ internal class GlassLensRenderer {
                     col = clamp(mix(float3(lum), col, amount), float3(0.0), float3(1.0));
                 }
 
-                // 自适应染色（Regular）/ 压暗层（Clear）
+                // 自适应染色（Regular）/ 固定材质染色（Clear）。这是盖在透射背景
+                // 上方的表面层：必须保留自身 alpha，不能混进直通 RGB 后再按背景 alpha 输出。
+                float3 surfaceColor;
+                float surfaceAlpha;
                 if (adaptiveTint > 0.5) {
                     // 逐像素自适应：按局部（模糊后）亮度在提亮/压暗之间平滑过渡，
                     // 玻璃跨明暗背景时不再整体翻转；曲线与全局版本
                     // （LiquidGlassView.onLuminanceSample）一致
                     float lumT = dot(col, float3(0.2126, 0.7152, 0.0722));
                     float e = smoothstep(0.35, 0.75, lumT);
-                    col = mix(col, float3(1.0 - e), 0.14 + 0.08 * e);
+                    surfaceColor = float3(1.0 - e);
+                    surfaceAlpha = 0.14 + 0.08 * e;
                 } else {
-                    col = mix(col, tintColor.rgb, tintColor.a);
+                    surfaceColor = tintColor.rgb;
+                    surfaceAlpha = tintColor.a;
                 }
+                // Clear 的压暗只作用于透射背景；表面染色按 src-over 在最终合成。
                 col = col * (1.0 - dimAmount);
 
                 // 使用方指定的玻璃本体色：按"有色介质"建模——吸收（保留背景明暗
@@ -283,12 +286,21 @@ internal class GlassLensRenderer {
                 float hair = clamp(1.0 - abs(d + 1.0) / 2.0, 0.0, 1.0) * cov;
                 float spec = (hair * 0.70 * (lobeF + lobeB) + glow * 0.10 * lobeF)
                              * specStrength * (1.0 - 0.35 * press);
-                col += float3(spec);
-
                 col = clamp(col, float3(0.0), float3(1.0));
-                // 输出保持预乘 alpha，既保留抗锯齿覆盖率，也不会把透明背景的黑色 RGB 变为实色。
-                float outAlpha = sourceAlpha * cov;
-                return half4(half3(col * outAlpha), half(outAlpha));
+                // 先输出透射背景，再以标准 src-over 叠加材质染色和高光。这样透明
+                // 采样不会变成黑色实底，同时默认材质仍会让圆形按钮保持可见。
+                float3 outPremul = col * sourceAlpha;
+                float outAlpha = sourceAlpha;
+                outPremul = surfaceColor * surfaceAlpha + outPremul * (1.0 - surfaceAlpha);
+                outAlpha = surfaceAlpha + outAlpha * (1.0 - surfaceAlpha);
+
+                // 高光同样属于独立表面反射，背景透明时仍应可见。
+                float specAlpha = clamp(spec, 0.0, 1.0);
+                outPremul = float3(specAlpha) + outPremul * (1.0 - specAlpha);
+                outAlpha = specAlpha + outAlpha * (1.0 - specAlpha);
+
+                // 最后才施加形状抗锯齿覆盖率，保持 AGSL 要求的预乘 alpha 输出。
+                return half4(half3(outPremul * cov), half(outAlpha * cov));
             }
         """
     }
