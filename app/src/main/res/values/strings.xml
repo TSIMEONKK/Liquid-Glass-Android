@@ -291,5 +291,18 @@
     <string name="backdrop_mode_ancestor">Ancestor</string>
     <string name="backdrop_hint_sibling">Glass sits in a transparent host beside the list; backdropSource points at the list content.</string>
     <string name="backdrop_hint_ancestor">Glass sits two containers deep; backdropSource points at the scene root.</string>
+    <!-- 原生 WebView 对照页。 -->
+    <string name="webview_repro_entry">WebView redraw check</string>
+    <string name="webview_repro_title">WebView redraw check</string>
+    <string name="webview_repro_instructions">Static native WebView. Tap the glass +, then leave the page still. Hide the glass to compare. The first number counts WebView draws; the second counts glass draws.</string>
+    <string name="webview_repro_counters">Draws in last second: WebView %1$d · Glass %2$d</string>
+    <string name="webview_repro_hide_glass">Hide glass</string>
+    <string name="webview_repro_show_glass">Show glass</string>
+    <string name="webview_repro_transparent">Transparent page</string>
+    <string name="webview_repro_opaque">Opaque page</string>
+    <string name="webview_repro_disable_sampling">Disable backdrop sampling</string>
+    <string name="webview_repro_enable_sampling">Enable backdrop sampling</string>
+    <string name="webview_repro_start_scroll">Start auto-scroll</string>
+    <string name="webview_repro_stop_scroll">Stop auto-scroll</string>
 </resources>
 

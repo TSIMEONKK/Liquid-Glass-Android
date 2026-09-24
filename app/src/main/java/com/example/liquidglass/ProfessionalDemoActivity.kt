@@ -2827,6 +2827,15 @@ class ProfessionalDemoActivity : AppCompatActivity() {
         }
         perfCard.addView(tvDebugInfo)
 
+        // 从调试面板进入独立对照页，避免现有演示场景的动画影响 WebView 统计。
+        perfCard.addView(Button(this).apply {
+            text = getString(R.string.webview_repro_entry)
+            setOnClickListener {
+                drawerLayout.closeDrawer(GravityCompat.END)
+                startActivity(Intent(this@ProfessionalDemoActivity, WebViewReproActivity::class.java))
+            }
+        })
+
         // ---------- 渲染路径 ----------
         val pathCard = addCard(root, getString(R.string.section_render_path))
         val initialPath = when {

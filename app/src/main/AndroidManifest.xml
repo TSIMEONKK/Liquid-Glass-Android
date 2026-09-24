@@ -40,6 +40,13 @@
             android:label="LiquidGlass Hero"
             android:screenOrientation="portrait" />
 
+        <!-- 原生 WebView 与玻璃取样的独立对照页，仅从 Demo App 内进入。 -->
+        <activity
+            android:name="com.example.liquidglass.WebViewReproActivity"
+            android:exported="false"
+            android:label="@string/webview_repro_title"
+            android:screenOrientation="portrait" />
+
     </application>
 
 </manifest>

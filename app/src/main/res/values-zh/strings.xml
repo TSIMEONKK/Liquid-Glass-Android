@@ -291,5 +291,18 @@
     <string name="backdrop_mode_ancestor">跨层祖先</string>
     <string name="backdrop_hint_sibling">玻璃在列表旁边的透明宿主里，backdropSource 指向列表内容。</string>
     <string name="backdrop_hint_ancestor">玻璃埋在两层容器里，backdropSource 直接指向场景根布局。</string>
+    <!-- 原生 WebView 对照页。 -->
+    <string name="webview_repro_entry">WebView 重绘对照</string>
+    <string name="webview_repro_title">WebView 重绘对照</string>
+    <string name="webview_repro_instructions">静态原生 WebView。点击玻璃 + 后保持页面静止，再隐藏玻璃对照。第一项是 WebView 绘制次数，第二项是玻璃绘制次数。</string>
+    <string name="webview_repro_counters">最近 1 秒绘制：WebView %1$d 次 · 玻璃 %2$d 次</string>
+    <string name="webview_repro_hide_glass">隐藏玻璃</string>
+    <string name="webview_repro_show_glass">显示玻璃</string>
+    <string name="webview_repro_transparent">透明网页</string>
+    <string name="webview_repro_opaque">不透明网页</string>
+    <string name="webview_repro_disable_sampling">关闭背景取样</string>
+    <string name="webview_repro_enable_sampling">开启背景取样</string>
+    <string name="webview_repro_start_scroll">开始自动滚动</string>
+    <string name="webview_repro_stop_scroll">停止自动滚动</string>
 </resources>
 
