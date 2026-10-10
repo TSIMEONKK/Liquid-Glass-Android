@@ -62,9 +62,6 @@ open class LiquidGlassView @JvmOverloads constructor(
         private const val ENABLE_PERFORMANCE_LOG = false  // 性能日志开关（仅调试时打开，每帧构造日志字符串有开销）
         private const val ENABLE_MEMORY_LOG = false  // 内存日志开关（默认关闭，避免日志污染）
 
-        // 背景变化检测的抽样网格（8x8 = 最多 64 个采样点）
-        private const val BACKDROP_SAMPLE_GRID = 8
-
         /**
          * 全局亮度采样标志：BackdropLuminanceMeter 采样父视图期间为 true，
          * 所有玻璃视图跳过自绘 —— 既避免玻璃影响自己的亮度读数，
@@ -866,7 +863,7 @@ open class LiquidGlassView @JvmOverloads constructor(
     }
 
     private fun registerBackdropScrollListener() {
-        val source = backdropSource ?: return
+        val source = backdropView ?: return
         if (registeredBackdropObserver != null) return
         if (!source.isAttachedToWindow) return
         val observer = source.viewTreeObserver
@@ -891,8 +888,7 @@ open class LiquidGlassView @JvmOverloads constructor(
     private var cachedBlurred: Bitmap? = null           // L2: 模糊后的背景
     private var cachedResult: Bitmap? = null            // L3: 最终结果
 
-    // 背景变化检测
-    private var lastBackdropHash: Int = 0
+    // 效果参数变化检测
     private var lastBlurRadius: Float = -1f
     private var lastAberrationIntensity: Float = -1f
 
@@ -1309,7 +1305,6 @@ open class LiquidGlassView @JvmOverloads constructor(
         cachedResult = null
 
         // 标记所有层为脏（背景每帧都会捕获，不需要标记）
-        lastBackdropHash = 0  // 重置背景哈希
         blurDirty = true
         aberrationDirty = true
     }
@@ -1989,20 +1984,11 @@ open class LiquidGlassView @JvmOverloads constructor(
             backdrop.eraseColor(Color.argb(200, 255, 255, 255))
         }
 
-        // ✅ 检测背景是否真的变化了（支持滚动背景）
-        // 注意：必须做内容抽样，Bitmap.hashCode() 是对象身份哈希，每帧新建对象永远不同
-        // 动态背景模式下跳过抽样判断：8×8 抽样存在漏检概率，动画背景直接视为每帧变化
-        val backdropChanged = if (enableDynamicBackground) {
-            true
-        } else {
-            val backdropHash = computeBackdropSignature(backdrop)
-            if (backdropHash != lastBackdropHash) {
-                lastBackdropHash = backdropHash
-                true
-            } else {
-                false
-            }
-        }
+        // 完整比较捕获结果：稀疏抽样会漏掉边缘的小范围变化，导致慢速移出后残留旧画面。
+        // sameAs 在原生层比较像素；背景完全一致时仍复用后续模糊和色差缓存。
+        val previousBackdrop = cachedBackdrop
+        val backdropChanged = enableDynamicBackground || previousBackdrop == null ||
+            previousBackdrop.isRecycled || !backdrop.sameAs(previousBackdrop)
         if (backdropChanged) {
             cachedBackdrop?.recycle()
             cachedBackdrop = backdrop
@@ -2162,33 +2148,6 @@ open class LiquidGlassView @JvmOverloads constructor(
         if (ENABLE_MEMORY_LOG) {
             logMemoryUsage()
         }
-    }
-
-    /**
-     * 对背景位图做稀疏抽样校验和，用于检测背景内容是否变化
-     *
-     * 背景位图已经过下采样，最多采样 8x8=64 个像素，开销可忽略。
-     * 抽样有极小概率漏检（变化恰好都落在采样点之间），
-     * 需要严格逐帧刷新的场景请开启 enableDynamicBackground。
-     */
-    private fun computeBackdropSignature(bitmap: Bitmap): Int {
-        val w = bitmap.width
-        val h = bitmap.height
-        if (w <= 0 || h <= 0) return 0
-
-        var hash = w * 31 + h
-        val stepX = (w / BACKDROP_SAMPLE_GRID).coerceAtLeast(1)
-        val stepY = (h / BACKDROP_SAMPLE_GRID).coerceAtLeast(1)
-        var y = stepY / 2
-        while (y < h) {
-            var x = stepX / 2
-            while (x < w) {
-                hash = hash * 31 + bitmap.getPixel(x, y)
-                x += stepX
-            }
-            y += stepY
-        }
-        return hash
     }
 
     /**
@@ -2384,7 +2343,6 @@ open class LiquidGlassView @JvmOverloads constructor(
         registerBackdropScrollListener()
 
         // 重新挂载后所有缓存已被清空，标记脏并重启重绘
-        lastBackdropHash = 0
         blurDirty = true
         aberrationDirty = true
         dispersionDirty = true
