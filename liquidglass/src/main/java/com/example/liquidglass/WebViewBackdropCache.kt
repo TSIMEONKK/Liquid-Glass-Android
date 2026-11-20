@@ -13,9 +13,17 @@ internal class WebViewBackdropCache {
         val owners = WeakHashMap<WebViewBackdropCache, Unit>()
     }
 
-    private companion object {
+    companion object {
         // 多块玻璃共享同一缓存层，最后一个使用者释放时才恢复。
-        val leases = WeakHashMap<View, Lease>()
+        private val leases = WeakHashMap<View, Lease>()
+        // 应用接管图层后，同一视图上的其他玻璃和渲染器也要尊重该选择。
+        private val changedByApp = WeakHashMap<View, Unit>()
+
+        fun relinquishLayer(view: View) {
+            // Android 只公开图层类型，同类型的画笔变更由调用方显式通知。
+            leases.remove(view)
+            changedByApp[view] = Unit
+        }
     }
 
     private var source: View? = null
@@ -25,11 +33,10 @@ internal class WebViewBackdropCache {
     private var maxTextureHeight = 0
     private val owned = ArrayList<View>()
     private val desired = ArrayList<View>()
-    private val changedByApp = WeakHashMap<View, Unit>()
     private val layoutListener = ViewTreeObserver.OnGlobalLayoutListener { refresh() }
 
     fun prepare(canvas: Canvas, source: View, glass: View) {
-        if (!canvas.isHardwareAccelerated) {
+        if (!canvas.isHardwareAccelerated || !canSample(glass)) {
             release()
             return
         }
@@ -50,12 +57,19 @@ internal class WebViewBackdropCache {
 
     private fun refresh() {
         val currentSource = source ?: return
+        if (!canSample(glass)) {
+            release()
+            return
+        }
         desired.clear()
         collect(currentSource)
         for (view in owned) if (!desired.contains(view)) releaseLayer(view)
         owned.clear()
         owned.addAll(desired)
     }
+
+    private fun canSample(glass: View?): Boolean =
+        glass != null && glass.isShown && glass.windowVisibility == View.VISIBLE
 
     private fun collect(view: View) {
         if (view === glass || view.visibility != View.VISIBLE || view.layerType == View.LAYER_TYPE_SOFTWARE) return
@@ -75,6 +89,7 @@ internal class WebViewBackdropCache {
         while (candidate != null && candidate !== currentSource) {
             // 缓存中不能包含正在录制的玻璃，否则会形成 RenderNode 引用环。
             if (containsGlass(candidate, currentGlass)) break
+            currentLease(candidate)
             if (changedByApp.containsKey(candidate)) return null
             if (fits(candidate)) {
                 when (candidate.layerType) {
@@ -107,15 +122,18 @@ internal class WebViewBackdropCache {
         return false
     }
 
+    private fun currentLease(view: View): Lease? {
+        val lease = leases[view] ?: return null
+        if (view.layerType == View.LAYER_TYPE_HARDWARE) return lease
+        // 采样和释放都要检查，图层可能在下一次全局布局前就被应用修改。
+        relinquishLayer(view)
+        return null
+    }
+
     private fun acquireLayer(view: View): Boolean {
-        val existing = leases[view]
-        if (existing != null) {
-            if (view.layerType != View.LAYER_TYPE_HARDWARE) {
-                // 使用期间应用修改了图层设置，后续不再覆盖该选择。
-                changedByApp[view] = Unit
-                return false
-            }
-            existing.owners[this] = Unit
+        val lease = leases[view]
+        if (lease != null) {
+            lease.owners[this] = Unit
             return true
         }
         if (view.layerType != View.LAYER_TYPE_NONE) return false
@@ -125,13 +143,11 @@ internal class WebViewBackdropCache {
     }
 
     private fun releaseLayer(view: View) {
-        val lease = leases[view] ?: return
+        val lease = currentLease(view) ?: return
         lease.owners.remove(this)
         if (lease.owners.isEmpty()) {
             leases.remove(view)
-            if (view.layerType == View.LAYER_TYPE_HARDWARE) {
-                view.setLayerType(View.LAYER_TYPE_NONE, null)
-            }
+            view.setLayerType(View.LAYER_TYPE_NONE, null)
         }
     }
 
@@ -143,7 +159,6 @@ internal class WebViewBackdropCache {
         for (view in owned) releaseLayer(view)
         owned.clear()
         desired.clear()
-        changedByApp.clear()
         source = null
         glass = null
     }

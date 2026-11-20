@@ -6,6 +6,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.SystemClock
@@ -63,6 +66,33 @@ class WebViewBackdropTest {
     }
 
     @Test
+    fun hidingGlassReleasesCacheOnlyAfterLastVisibleOwner() = withBackdrop(glassCount = 2, nested = true) { fixture ->
+        val (first, second) = fixture.glasses
+        await("Both glass views sampled") {
+            fixture.glasses.all { it.lastFrameStats?.effectName?.startsWith("GPU") == true }
+        }
+        val panel = checkNotNull(fixture.panel)
+        onMain {
+            // 单独隐藏一块玻璃时，另一块可见玻璃仍持有共享缓存。
+            first.visibility = View.GONE
+            assertEquals(View.LAYER_TYPE_HARDWARE, fixture.web.layerType)
+            second.visibility = View.INVISIBLE
+            assertEquals(View.LAYER_TYPE_NONE, fixture.web.layerType)
+            fixture.root.requestLayout()
+        }
+        instrumentation.waitForIdleSync()
+        onMain {
+            assertEquals(View.LAYER_TYPE_NONE, fixture.web.layerType)
+            second.visibility = View.VISIBLE
+        }
+        await("Visible glass reacquired the cache") { fixture.web.layerType == View.LAYER_TYPE_HARDWARE }
+        onMain { panel.visibility = View.GONE }
+        await("Hiding the parent released the cache") { fixture.web.layerType == View.LAYER_TYPE_NONE }
+        onMain { panel.visibility = View.VISIBLE }
+        await("Showing the parent reacquired the cache") { fixture.web.layerType == View.LAYER_TYPE_HARDWARE }
+    }
+
+    @Test
     fun changingBackdropSourceRestoresPreviousLayer() = withBackdrop { fixture ->
         await("Initial cache") { fixture.web.layerType == View.LAYER_TYPE_HARDWARE }
         onMain {
@@ -110,6 +140,80 @@ class WebViewBackdropTest {
     }
 
     @Test
+    fun applicationCanTakeOverHardwareLayerWithPaint() = withBackdrop(glassCount = 2) { fixture ->
+        await("Shared cache") {
+            fixture.web.layerType == View.LAYER_TYPE_HARDWARE &&
+                fixture.glasses.all { it.lastFrameStats?.effectName?.startsWith("GPU") == true }
+        }
+        onMain {
+            // 图层类型不变，只更新画笔，然后模拟共享缓存的使用者先后退出。
+            val paint = Paint().apply {
+                colorFilter = PorterDuffColorFilter(Color.RED, PorterDuff.Mode.SRC_IN)
+            }
+            LiquidGlassView.setBackdropLayerType(fixture.web, View.LAYER_TYPE_HARDWARE, paint)
+            for (glass in fixture.glasses) {
+                fixture.root.removeView(glass)
+                assertEquals(View.LAYER_TYPE_HARDWARE, fixture.web.layerType)
+            }
+        }
+    }
+
+    @Test
+    fun newGlassRespectsLayerRemovedByApplication() = withBackdrop { fixture ->
+        await("Initial cache") { fixture.web.layerType == View.LAYER_TYPE_HARDWARE }
+        val first = fixture.glasses.single()
+        lateinit var second: LiquidGlassView
+        onMain {
+            // 模拟应用在全局布局回调观察到图层变化之前替换玻璃控件。
+            fixture.web.setLayerType(View.LAYER_TYPE_NONE, null)
+            fixture.root.removeView(first)
+            second = LiquidGlassView(fixture.root.context).apply {
+                enableAdaptiveTint = false
+                enableChromaticAberration = false
+            }
+            fixture.root.addView(second, FrameLayout.LayoutParams(first.layoutParams as FrameLayout.LayoutParams))
+        }
+        await("New glass sampled on the GPU") { second.lastFrameStats?.effectName?.startsWith("GPU") == true }
+        onMain { assertEquals(View.LAYER_TYPE_NONE, fixture.web.layerType) }
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 33)
+    fun switchingGpuRenderersRespectsLayerRemovedByApplication() = withBackdrop { fixture ->
+        val glass = fixture.glasses.single()
+        await("Initial lens cache") {
+            glass.lastFrameStats?.effectName == "GPU Lens" &&
+                fixture.web.layerType == View.LAYER_TYPE_HARDWARE
+        }
+        onMain {
+            fixture.web.setLayerType(View.LAYER_TYPE_NONE, null)
+            glass.enableChromaticAberration = false
+            glass.useShaderPipeline = false
+        }
+        await("Switched to GPU blur") { glass.lastFrameStats?.effectName == "GPU Blur" }
+        onMain {
+            assertEquals(View.LAYER_TYPE_NONE, fixture.web.layerType)
+            glass.useShaderPipeline = true
+        }
+        await("Switched back to GPU lens") { glass.lastFrameStats?.effectName == "GPU Lens" }
+        onMain { assertEquals(View.LAYER_TYPE_NONE, fixture.web.layerType) }
+    }
+
+    @Test
+    fun currentDrawRateExpiresWhenDrawingStops() = withBackdrop { fixture ->
+        val glass = fixture.glasses.single()
+        onMain { glass.enableDynamicBackground = true }
+        await("Measured a positive draw rate") { (glass.currentDrawRate ?: 0) > 0 }
+        onMain {
+            // 保留最后一帧的统计，单独检查实时绘制频率是否过期。
+            glass.enableDynamicBackground = false
+            glass.visibility = View.INVISIBLE
+        }
+        await("Draw rate expired") { glass.currentDrawRate == 0 }
+        onMain { assertTrue((glass.lastFrameStats?.drawFps ?: 0) > 0) }
+    }
+
+    @Test
     fun applicationLayerChangeIsPreserved() = withBackdrop { fixture ->
         await("Initial cache") { fixture.web.layerType == View.LAYER_TYPE_HARDWARE }
         onMain {
@@ -150,6 +254,37 @@ class WebViewBackdropTest {
             }
         }
         await("CPU path released cache") { fixture.web.layerType == View.LAYER_TYPE_NONE }
+    }
+
+    @Test
+    fun softwareScreenshotPreservesScreenGpuBackdropCache() = withBackdrop { fixture ->
+        val glass = fixture.glasses.single()
+        await("Screen owns the WebView cache") {
+            fixture.web.layerType == View.LAYER_TYPE_HARDWARE &&
+                glass.lastFrameStats?.effectName?.startsWith("GPU") == true
+        }
+        onMain {
+            val screenshot = Bitmap.createBitmap(glass.width, glass.height, Bitmap.Config.ARGB_8888)
+            try {
+                glass.draw(Canvas(screenshot))
+                // 截图使用软件画布，屏幕的硬件层租约仍由这块玻璃持有。
+                assertEquals(View.LAYER_TYPE_HARDWARE, fixture.web.layerType)
+            } finally {
+                screenshot.recycle()
+            }
+            glass.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+            glass.invalidate()
+        }
+        await("Software layer released the screen cache") {
+            fixture.web.layerType == View.LAYER_TYPE_NONE
+        }
+        onMain {
+            glass.setLayerType(View.LAYER_TYPE_NONE, null)
+            glass.invalidate()
+        }
+        await("Screen reacquired the WebView cache") {
+            fixture.web.layerType == View.LAYER_TYPE_HARDWARE
+        }
     }
 
     @Test

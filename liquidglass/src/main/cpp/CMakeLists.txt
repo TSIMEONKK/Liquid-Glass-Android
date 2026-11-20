@@ -64,6 +64,10 @@ add_library(
     chromatic_aberration.cpp
 )
 
+# 色差、色散和递归模糊会检查 NaN/Infinity，Release 构建也保留这些检查。
+set_source_files_properties(chromatic_aberration.cpp gauss_iir.cpp gauss_iir_neon.cpp
+    PROPERTIES COMPILE_OPTIONS "-fno-finite-math-only")
+
 # 包含目录
 target_include_directories(
     nativegauss

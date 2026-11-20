@@ -3443,11 +3443,12 @@ class ProfessionalDemoActivity : AppCompatActivity() {
     }
 
     private fun updatePerformanceDisplay() {
-        val stats = (statsSource ?: glassView).lastFrameStats ?: return
+        val source = statsSource ?: glassView
+        val stats = source.lastFrameStats ?: return
         val isGpu = stats.effectName.startsWith("GPU")
 
         // 只显示实测绘制频率；GPU 录制耗时不包含实际着色和屏幕呈现。
-        val drawRate = stats.drawFps.takeIf { it > 0 }?.toString() ?: "--"
+        val drawRate = source.currentDrawRate?.toString() ?: "--"
 
         fun fmt(ms: Float) = String.format("%.2f", ms)
 

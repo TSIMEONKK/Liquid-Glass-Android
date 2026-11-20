@@ -35,6 +35,9 @@ class ChromaticDispersionEffect {
     companion object {
         private const val TAG = "ChromaticDispersion"
 
+        internal fun normalizeRefFactor(value: Float): Float =
+            if (value.isFinite()) value.coerceAtLeast(1f) else 1.5f
+
         /**
          * 效果预设
          */
@@ -86,6 +89,7 @@ class ChromaticDispersionEffect {
     private var cachedEdgeMap: Bitmap? = null
     private var cachedNormalMap: Bitmap? = null
     private var cachedSize = Pair(0, 0)
+    private var cachedCornerRadii: FloatArray? = null
 
     /**
      * 应用色散效果
@@ -109,95 +113,87 @@ class ChromaticDispersionEffect {
         useNormalMap: Boolean = false,
         cornerRadii: FloatArray? = null
     ): Bitmap {
-        val startTime = System.currentTimeMillis()
-
-        // 降采样
-        val processWidth = (source.width * downscale).toInt()
-        val processHeight = (source.height * downscale).toInt()
-
-        Log.d(TAG, "Processing ${source.width}x${source.height} -> ${processWidth}x${processHeight} (downscale=$downscale)")
-
-        val smallSource = if (downscale < 1.0f) {
+        // 窄图经过两次降采样后仍至少为 1×1。
+        val scale = if (downscale.isFinite() && downscale > 0f) downscale.coerceAtMost(1f) else 0.5f
+        val processWidth = (source.width * scale).toInt().coerceAtLeast(1)
+        val processHeight = (source.height * scale).toInt().coerceAtLeast(1)
+        val resize = processWidth != source.width || processHeight != source.height
+        val scaledSource = if (resize) {
             Bitmap.createScaledBitmap(source, processWidth, processHeight, true)
         } else {
             source
         }
 
-        // 应用圆角裁剪（设置圆角外的像素为透明）
-        val maxRadius = min(processWidth, processHeight) / 2f
-        val clippedSource = if (cornerRadii != null) {
-            // 逐角圆角：每个角各自缩放并钳制
-            applyRoundedCornerClip(smallSource, FloatArray(8) { min(cornerRadii[it] * downscale, maxRadius) })
-        } else if (cornerRadius > 0) {
-            // 限制圆角半径不超过图像尺寸的一半（避免过大的圆角）
-            val scaledRadius = cornerRadius * downscale
-            val clampedRadius = min(scaledRadius, maxRadius)
-            applyRoundedCornerClip(smallSource, clampedRadius)
-        } else {
-            smallSource
-        }
-
-        // 生成或复用边缘距离贴图（基于 Alpha 通道检测边缘）
-        val edgeMap = if (cachedEdgeMap != null && cachedSize == Pair(processWidth, processHeight)) {
-            cachedEdgeMap!!
-        } else {
-            Log.d(TAG, "Generating edge distance map from alpha channel...")
-            val map = DispersionMapGenerator.generateEdgeDistanceMapFromAlpha(clippedSource)
-            cachedEdgeMap = map
-            cachedSize = Pair(processWidth, processHeight)
-            map
-        }
-
-        // 生成或复用法线贴图（如果需要）
-        val normalMap = if (useNormalMap) {
-            if (cachedNormalMap != null && cachedSize == Pair(processWidth, processHeight)) {
-                cachedNormalMap!!
+        try {
+            // JNI 只接受 ARGB_8888。先缩小再转换，避免复制全尺寸的 RGB_565 等位图。
+            val smallSource = if (scaledSource.config == Bitmap.Config.ARGB_8888) {
+                scaledSource
             } else {
-                Log.d(TAG, "Generating normal map...")
-                val map = DispersionMapGenerator.generateRadialNormalMap(processWidth, processHeight)
-                cachedNormalMap = map
-                map
+                checkNotNull(scaledSource.copy(Bitmap.Config.ARGB_8888, false))
             }
-        } else {
-            null
+            try {
+                val size = Pair(processWidth, processHeight)
+                val maxRadius = min(processWidth, processHeight) / 2f
+                val effectiveCornerRadii = when {
+                    cornerRadii != null -> FloatArray(8) {
+                        min(cornerRadii[it] * scale, maxRadius)
+                    }
+                    cornerRadius > 0 -> FloatArray(8) {
+                        min(cornerRadius * scale, maxRadius)
+                    }
+                    else -> null
+                }
+                // 边缘贴图同时取决于尺寸和圆角形状，任一变化都必须重建。
+                if (cachedSize != size || !sameCornerRadii(effectiveCornerRadii, cachedCornerRadii)) {
+                    clearCache()
+                    cachedSize = size
+                    cachedCornerRadii = effectiveCornerRadii
+                }
+                val edgeMap = cachedEdgeMap ?: run {
+                    // 仅在重建贴图时裁剪，及时释放不进入缓存的临时位图。
+                    val clippedSource = if (effectiveCornerRadii != null) {
+                        applyRoundedCornerClip(smallSource, effectiveCornerRadii)
+                    } else {
+                        smallSource
+                    }
+                    try {
+                        DispersionMapGenerator.generateEdgeDistanceMapFromAlpha(clippedSource)
+                            .also { cachedEdgeMap = it }
+                    } finally {
+                        if (clippedSource !== smallSource) clippedSource.recycle()
+                    }
+                }
+                val normalMap = if (useNormalMap) {
+                    cachedNormalMap ?: DispersionMapGenerator.generateRadialNormalMap(processWidth, processHeight)
+                        .also { cachedNormalMap = it }
+                } else null
+
+                val result = Bitmap.createBitmap(processWidth, processHeight, Bitmap.Config.ARGB_8888)
+                var returned = false
+                try {
+                    NativeChromaticDispersion.chromaticDispersionInplace(
+                        source = smallSource,
+                        edgeDistance = edgeMap,
+                        normalMap = normalMap,
+                        result = result,
+                        refThickness = refThickness * scale,
+                        refFactor = normalizeRefFactor(refFactor),
+                        refDispersion = refDispersion,
+                        dpr = devicePixelRatio,
+                        useBilinear = useBilinearInterpolation
+                    )
+                    if (resize) return Bitmap.createScaledBitmap(result, source.width, source.height, true)
+                    returned = true
+                    return result
+                } finally {
+                    if (!returned) result.recycle()
+                }
+            } finally {
+                if (smallSource !== scaledSource) smallSource.recycle()
+            }
+        } finally {
+            if (scaledSource !== source) scaledSource.recycle()
         }
-
-        // 创建结果 Bitmap
-        val result = Bitmap.createBitmap(processWidth, processHeight, Bitmap.Config.ARGB_8888)
-
-        // 调用 C++ 实现
-        val processingStart = System.currentTimeMillis()
-        NativeChromaticDispersion.chromaticDispersionInplace(
-            source = smallSource,
-            edgeDistance = edgeMap,
-            normalMap = normalMap,
-            result = result,
-            refThickness = refThickness * downscale,  // 根据降采样调整参数
-            refFactor = refFactor,
-            refDispersion = refDispersion,
-            dpr = devicePixelRatio,
-            useBilinear = useBilinearInterpolation
-        )
-        val processingTime = System.currentTimeMillis() - processingStart
-
-        // 上采样回原始分辨率
-        val finalResult = if (downscale < 1.0f) {
-            val upscaled = Bitmap.createScaledBitmap(result, source.width, source.height, true)
-            result.recycle()
-            upscaled
-        } else {
-            result
-        }
-
-        // 清理
-        if (downscale < 1.0f && smallSource != source) {
-            smallSource.recycle()
-        }
-
-        val totalTime = System.currentTimeMillis() - startTime
-        Log.d(TAG, "Dispersion effect applied: processing=${processingTime}ms, total=${totalTime}ms")
-
-        return finalResult
     }
 
     /**
@@ -275,6 +271,13 @@ class ChromaticDispersionEffect {
         return output
     }
 
+    private fun sameCornerRadii(first: FloatArray?, second: FloatArray?): Boolean =
+        when {
+            first == null && second == null -> true
+            first != null && second != null -> first.contentEquals(second)
+            else -> false
+        }
+
     /**
      * 清理缓存的贴图
      */
@@ -284,6 +287,7 @@ class ChromaticDispersionEffect {
         cachedNormalMap?.recycle()
         cachedNormalMap = null
         cachedSize = Pair(0, 0)
+        cachedCornerRadii = null
     }
 
     /**

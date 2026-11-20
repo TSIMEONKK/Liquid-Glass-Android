@@ -32,6 +32,38 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <algorithm>
+#include <array>
+
+namespace gauss_color {
+constexpr int TABLE_SIZE = 4096;
+constexpr int OPAQUE_ENCODE_SIZE = 65536;
+
+struct TransferTables {
+    std::array<float, TABLE_SIZE + 1> decoded;
+    std::array<float, TABLE_SIZE + 1> encoded;
+    std::array<float, 256> decodedOpaque;
+    std::array<uint8_t, OPAQUE_ENCODE_SIZE + 1> encodedOpaque;
+
+    TransferTables();
+};
+
+const TransferTables& transfer_tables();
+
+inline float interpolate(const std::array<float, TABLE_SIZE + 1>& table, float value) {
+    const float position = std::clamp(value, 0.0f, 1.0f) * TABLE_SIZE;
+    const int lower = std::min(static_cast<int>(position), TABLE_SIZE - 1);
+    return table[lower] + (position - lower) * (table[lower + 1] - table[lower]);
+}
+
+inline float decode(float channel, float alpha) {
+    return alpha > 0.0f ? interpolate(transfer_tables().decoded, channel / alpha) * alpha : 0.0f;
+}
+
+inline float encode(float channel, float alpha) {
+    return alpha > 0.0f ? interpolate(transfer_tables().encoded, channel / alpha) * alpha : 0.0f;
+}
+}
 
 /**
  * IIR 递归高斯模糊（RGBA8888 格式，原位处理）
@@ -42,13 +74,13 @@
  * @param stride 行跨度（字节数），通常为 w * 4，但可能有对齐填充
  * @param sigma 高斯标准差，推荐范围 [0.5, 50.0]
  * @param doLinear 是否在线性色彩空间处理
- *                 - true：sRGB→Linear→去预乘→处理→再预乘→sRGB
+ *                 - true：去预乘后转换到线性光，按 Alpha 加权滤波，再编码为预乘 sRGB
  *                 - false：直接在预乘 sRGB 空间处理
  * 
  * 注意事项：
  * - 函数会直接修改 base 指向的内存
  * - sigma ≤ 0.1 时直接返回，不做处理
- * - 内部会分配临时缓冲区，大小为 max(w, h) * 4 * sizeof(float)
+ * - 内部会分配临时缓冲区，大小为 max(w, h) * 5 * sizeof(float)
  * - 非线程安全，不要对同一块内存并发调用
  */
 void gaussian_iir_rgba8888_inplace(

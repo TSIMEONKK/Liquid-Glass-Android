@@ -12,9 +12,12 @@
  */
 
 #include "gauss_iir_neon.h"
+#include "gauss_iir.h"
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <memory>
+#include <new>
 #include <android/log.h>
 
 // NEON intrinsics
@@ -35,26 +38,7 @@
 #endif
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// sRGB ↔ Linear 转换（向量化版本）
 #if NEON_AVAILABLE
-static inline float32x4_t srgb_to_linear_neon(float32x4_t srgb) {
-    // 快速近似：srgb^2.2 ≈ srgb * srgb * (srgb * 0.2 + 0.8)
-    float32x4_t srgb2 = vmulq_f32(srgb, srgb);
-    float32x4_t factor = vmlaq_n_f32(vdupq_n_f32(0.8f), srgb, 0.2f);
-    return vmulq_f32(srgb2, factor);
-}
-
-static inline float32x4_t linear_to_srgb_neon(float32x4_t linear) {
-    // 快速近似：linear^(1/2.2) ≈ sqrt(linear) * (1 - 0.2 * linear)
-    // 使用倒数平方根近似来计算 sqrt
-    float32x4_t rsqrt = vrsqrteq_f32(linear);  // 快速倒数平方根估计
-    rsqrt = vmulq_f32(rsqrt, vrsqrtsq_f32(vmulq_f32(linear, rsqrt), rsqrt));  // Newton-Raphson 迭代
-    float32x4_t sqrt_linear = vmulq_f32(linear, rsqrt);  // sqrt(x) = x * rsqrt(x)
-    float32x4_t factor = vmlsq_n_f32(vdupq_n_f32(1.0f), linear, 0.2f);
-    return vmulq_f32(sqrt_linear, factor);
-}
-#endif
-
 // Deriche 系数结构（与标量版本相同）
 struct DericheCoeffs {
     float a0, a1, a2, a3;
@@ -85,14 +69,14 @@ static DericheCoeffs compute_deriche_coeffs(float sigma) {
     return c;
 }
 
-#if NEON_AVAILABLE
-
 /**
  * 一维 IIR 递归滤波（NEON 向量化版本）
  * 
  * 处理 4 个通道（RGBA），使用 NEON 并行计算
  */
-static void iir_filter_1d_neon(const float* src, float* dst, int len, const DericheCoeffs& c) {
+static void iir_filter_1d_neon(
+    const float32x4_t* __restrict src, float32x4_t* __restrict dst, int len, const DericheCoeffs& c
+) {
     if (len <= 0) return;
     
     // 加载系数到 NEON 寄存器
@@ -106,12 +90,12 @@ static void iir_filter_1d_neon(const float* src, float* dst, int len, const Deri
     float32x4_t vcoefn = vdupq_n_f32(c.coefn);
     
     // 前向递归（causal）
-    float32x4_t vxp1 = vld1q_f32(src);
+    float32x4_t vxp1 = src[0];
     float32x4_t vyp1 = vmulq_f32(vxp1, vcoefp);
     float32x4_t vyp2 = vyp1;
     
     for (int i = 0; i < len; ++i) {
-        float32x4_t vxc = vld1q_f32(src + i * 4);
+        float32x4_t vxc = src[i];
         
         // yc = a0*xc + a1*xp1 - b1*yp1 - b2*yp2
         float32x4_t vyc = vmulq_f32(va0, vxc);
@@ -119,7 +103,7 @@ static void iir_filter_1d_neon(const float* src, float* dst, int len, const Deri
         vyc = vmlsq_f32(vyc, vb1, vyp1);
         vyc = vmlsq_f32(vyc, vb2, vyp2);
         
-        vst1q_f32(dst + i * 4, vyc);
+        dst[i] = vyc;
         
         vxp1 = vxc;
         vyp2 = vyp1;
@@ -127,13 +111,13 @@ static void iir_filter_1d_neon(const float* src, float* dst, int len, const Deri
     }
     
     // 后向递归（anti-causal）
-    float32x4_t vxn1 = vld1q_f32(src + (len - 1) * 4);
+    float32x4_t vxn1 = src[len - 1];
     float32x4_t vxn2 = vxn1;  // 初始化 xn2
     float32x4_t vyn1 = vmulq_f32(vxn1, vcoefn);
     float32x4_t vyn2 = vyn1;
 
     for (int i = len - 1; i >= 0; --i) {
-        float32x4_t vxc = vld1q_f32(src + i * 4);
+        float32x4_t vxc = src[i];
 
         // yc = a2*xn1 + a3*xn2 - b1*yn1 - b2*yn2
         float32x4_t vyc = vmulq_f32(va2, vxn1);
@@ -142,8 +126,7 @@ static void iir_filter_1d_neon(const float* src, float* dst, int len, const Deri
         vyc = vmlsq_f32(vyc, vb2, vyn2);
 
         // 累加前向和后向结果
-        float32x4_t vsum = vaddq_f32(vld1q_f32(dst + i * 4), vyc);
-        vst1q_f32(dst + i * 4, vsum);
+        dst[i] = vaddq_f32(dst[i], vyc);
 
         vxn2 = vxn1;
         vxn1 = vxc;
@@ -152,164 +135,104 @@ static void iir_filter_1d_neon(const float* src, float* dst, int len, const Deri
     }
 }
 
-/**
- * 横向模糊（NEON 优化）
- */
-static void blur_horizontal_neon(
-    uint8_t* base,
-    int w,
-    int h,
-    int stride,
-    const DericheCoeffs& c,
-    float* rowBuf,
-    bool doLinear
-) {
-    const float inv255 = 1.0f / 255.0f;
-    
-    for (int y = 0; y < h; ++y) {
-        uint8_t* row = base + y * stride;
-        
-        // uint8 → float，可选色彩空间转换
-        for (int x = 0; x < w; ++x) {
-            uint32_t px = reinterpret_cast<uint32_t*>(row)[x];
-            float a = ((px >> 24) & 0xFF) * inv255;
-            float r = ((px >> 16) & 0xFF) * inv255;
-            float g = ((px >> 8) & 0xFF) * inv255;
-            float b = (px & 0xFF) * inv255;
-            
-            if (doLinear && a > 1e-5f) {
-                float invA = 1.0f / a;
-                r *= invA; g *= invA; b *= invA;
-                
-                float32x4_t vrgb = {r, g, b, 0.0f};
-                vrgb = srgb_to_linear_neon(vrgb);
-                r = vgetq_lane_f32(vrgb, 0);
-                g = vgetq_lane_f32(vrgb, 1);
-                b = vgetq_lane_f32(vrgb, 2);
-                
-                r *= a; g *= a; b *= a;
-            }
-            
-            rowBuf[x * 4 + 0] = r;
-            rowBuf[x * 4 + 1] = g;
-            rowBuf[x * 4 + 2] = b;
-            rowBuf[x * 4 + 3] = a;
-        }
-        
-        // IIR 滤波（NEON 向量化）
-        iir_filter_1d_neon(rowBuf, rowBuf, w, c);
-        
-        // float → uint8，可选色彩空间转换
-        for (int x = 0; x < w; ++x) {
-            float r = rowBuf[x * 4 + 0];
-            float g = rowBuf[x * 4 + 1];
-            float b = rowBuf[x * 4 + 2];
-            float a = rowBuf[x * 4 + 3];
-            
-            if (doLinear && a > 1e-5f) {
-                float invA = 1.0f / a;
-                r *= invA; g *= invA; b *= invA;
-                
-                float32x4_t vrgb = {r, g, b, 0.0f};
-                vrgb = linear_to_srgb_neon(vrgb);
-                r = vgetq_lane_f32(vrgb, 0);
-                g = vgetq_lane_f32(vrgb, 1);
-                b = vgetq_lane_f32(vrgb, 2);
-                
-                r *= a; g *= a; b *= a;
-            }
-            
-            r = std::max(0.0f, std::min(1.0f, r));
-            g = std::max(0.0f, std::min(1.0f, g));
-            b = std::max(0.0f, std::min(1.0f, b));
-            a = std::max(0.0f, std::min(1.0f, a));
-            
-            uint32_t px = (static_cast<uint32_t>(a * 255.0f + 0.5f) << 24) |
-                          (static_cast<uint32_t>(r * 255.0f + 0.5f) << 16) |
-                          (static_cast<uint32_t>(g * 255.0f + 0.5f) << 8) |
-                          static_cast<uint32_t>(b * 255.0f + 0.5f);
-            reinterpret_cast<uint32_t*>(row)[x] = px;
-        }
-    }
+static inline uint32_t load_pixel(const uint8_t* pixel) {
+    uint32_t bytes;
+    std::memcpy(&bytes, pixel, sizeof(bytes));
+    return bytes;
 }
 
-/**
- * 纵向模糊（NEON 优化）
- */
-static void blur_vertical_neon(
-    uint8_t* base,
-    int w,
-    int h,
-    int stride,
-    const DericheCoeffs& c,
-    float* colBuf,
-    bool doLinear
+static inline float32x4_t unpack_pixel(uint32_t bytes) {
+    const uint8x8_t packed = vreinterpret_u8_u32(vdup_n_u32(bytes));
+    const uint16x4_t channels = vget_low_u16(vmovl_u8(packed));
+    return vcvtq_f32_u32(vmovl_u16(channels));
+}
+
+static inline void store_pixel(uint8_t* pixel, float32x4_t channels) {
+    const auto rounded = vaddq_f32(channels, vdupq_n_f32(0.5f));
+    const auto half = vqmovn_u32(vcvtq_u32_f32(rounded));
+    const auto packed = vqmovn_u16(vcombine_u16(half, half));
+    const uint32_t bytes = vget_lane_u32(vreinterpret_u32_u8(packed), 0);
+    std::memcpy(pixel, &bytes, sizeof(bytes));
+}
+
+template<bool Linear>
+static void blur_lines_neon(
+    uint8_t* base, int length, int lines, size_t pixelStep, size_t lineStep,
+    const DericheCoeffs& coeffs, float32x4_t* samples
 ) {
-    const float inv255 = 1.0f / 255.0f;
-    
-    for (int x = 0; x < w; ++x) {
-        // uint8 → float
-        for (int y = 0; y < h; ++y) {
-            uint8_t* row = base + y * stride;
-            uint32_t px = reinterpret_cast<uint32_t*>(row)[x];
-            float a = ((px >> 24) & 0xFF) * inv255;
-            float r = ((px >> 16) & 0xFF) * inv255;
-            float g = ((px >> 8) & 0xFF) * inv255;
-            float b = (px & 0xFF) * inv255;
-            
-            if (doLinear && a > 1e-5f) {
-                float invA = 1.0f / a;
-                r *= invA; g *= invA; b *= invA;
-                
-                float32x4_t vrgb = {r, g, b, 0.0f};
-                vrgb = srgb_to_linear_neon(vrgb);
-                r = vgetq_lane_f32(vrgb, 0);
-                g = vgetq_lane_f32(vrgb, 1);
-                b = vgetq_lane_f32(vrgb, 2);
-                
-                r *= a; g *= a; b *= a;
+    // 输入与前向结果分开，后向递归可完整读取原始样本。
+    float32x4_t* filtered = samples + length;
+    const auto* tables = Linear ? &gauss_color::transfer_tables() : nullptr;
+    for (int line = 0; line < lines; ++line) {
+        uint8_t* start = base + line * lineStep;
+        uint32_t alphaBits = 0xFF000000;
+        for (int index = 0; index < length; ++index) {
+            const uint32_t bytes = load_pixel(start + index * pixelStep);
+            if constexpr (Linear) {
+                alphaBits &= bytes;
+                const uint32_t alphaByte = bytes >> 24;
+                const uint32_t first = bytes & 0xFF;
+                const uint32_t second = (bytes >> 8) & 0xFF;
+                const uint32_t third = (bytes >> 16) & 0xFF;
+                if (alphaByte == 255) {
+                    samples[index] = {
+                        tables->decodedOpaque[first], tables->decodedOpaque[second],
+                        tables->decodedOpaque[third], 1.0f
+                    };
+                } else if (alphaByte != 0) {
+                    const float alpha = alphaByte / 255.0f;
+                    const float inverse = 1.0f / alphaByte;
+                    samples[index] = {
+                        gauss_color::interpolate(tables->decoded, first * inverse) * alpha,
+                        gauss_color::interpolate(tables->decoded, second * inverse) * alpha,
+                        gauss_color::interpolate(tables->decoded, third * inverse) * alpha,
+                        alpha
+                    };
+                } else {
+                    samples[index] = vdupq_n_f32(0.0f);
+                }
+            } else {
+                samples[index] = unpack_pixel(bytes);
             }
-            
-            colBuf[y * 4 + 0] = r;
-            colBuf[y * 4 + 1] = g;
-            colBuf[y * 4 + 2] = b;
-            colBuf[y * 4 + 3] = a;
         }
-        
-        // IIR 滤波（NEON 向量化）
-        iir_filter_1d_neon(colBuf, colBuf, h, c);
-        
-        // float → uint8
-        for (int y = 0; y < h; ++y) {
-            float r = colBuf[y * 4 + 0];
-            float g = colBuf[y * 4 + 1];
-            float b = colBuf[y * 4 + 2];
-            float a = colBuf[y * 4 + 3];
-            
-            if (doLinear && a > 1e-5f) {
-                float invA = 1.0f / a;
-                r *= invA; g *= invA; b *= invA;
-                
-                float32x4_t vrgb = {r, g, b, 0.0f};
-                vrgb = linear_to_srgb_neon(vrgb);
-                r = vgetq_lane_f32(vrgb, 0);
-                g = vgetq_lane_f32(vrgb, 1);
-                b = vgetq_lane_f32(vrgb, 2);
-                
-                r *= a; g *= a; b *= a;
+        iir_filter_1d_neon(samples, filtered, length, coeffs);
+        if constexpr (Linear) {
+            if (alphaBits == 0xFF000000) {
+                // 不透明行的 Alpha 经过归一化滤波后仍为 1，可直接查 8 位输出。
+                const auto upper = vdupq_n_f32(1.0f);
+                const auto zero = vdupq_n_f32(0.0f);
+                for (int index = 0; index < length; ++index) {
+                    const auto clamped = vminq_f32(vmaxq_f32(filtered[index], zero), upper);
+                    const auto scaled = vmulq_n_f32(clamped, gauss_color::OPAQUE_ENCODE_SIZE);
+                    const auto entries = vcvtq_u32_f32(vaddq_f32(scaled, vdupq_n_f32(0.5f)));
+                    const uint32_t bytes =
+                        static_cast<uint32_t>(tables->encodedOpaque[vgetq_lane_u32(entries, 0)]) |
+                        (static_cast<uint32_t>(tables->encodedOpaque[vgetq_lane_u32(entries, 1)]) << 8) |
+                        (static_cast<uint32_t>(tables->encodedOpaque[vgetq_lane_u32(entries, 2)]) << 16) |
+                        0xFF000000;
+                    std::memcpy(start + index * pixelStep, &bytes, sizeof(bytes));
+                }
+                continue;
             }
-            
-            r = std::max(0.0f, std::min(1.0f, r));
-            g = std::max(0.0f, std::min(1.0f, g));
-            b = std::max(0.0f, std::min(1.0f, b));
-            a = std::max(0.0f, std::min(1.0f, a));
-            
-            uint8_t* row = base + y * stride;
-            uint32_t px = (static_cast<uint32_t>(a * 255.0f + 0.5f) << 24) |
-                          (static_cast<uint32_t>(r * 255.0f + 0.5f) << 16) |
-                          (static_cast<uint32_t>(g * 255.0f + 0.5f) << 8) |
-                          static_cast<uint32_t>(b * 255.0f + 0.5f);
-            reinterpret_cast<uint32_t*>(row)[x] = px;
+        }
+        for (int index = 0; index < length; ++index) {
+            auto channels = filtered[index];
+            if constexpr (Linear) {
+                const float alpha = std::clamp(vgetq_lane_f32(channels, 3), 0.0f, 1.0f);
+                if (alpha > 0.0f) {
+                    const float inverse = 1.0f / alpha;
+                    const float scaledAlpha = alpha * 255.0f;
+                    channels = {
+                        gauss_color::interpolate(tables->encoded, vgetq_lane_f32(channels, 0) * inverse) * scaledAlpha,
+                        gauss_color::interpolate(tables->encoded, vgetq_lane_f32(channels, 1) * inverse) * scaledAlpha,
+                        gauss_color::interpolate(tables->encoded, vgetq_lane_f32(channels, 2) * inverse) * scaledAlpha,
+                        scaledAlpha
+                    };
+                } else {
+                    channels = vdupq_n_f32(0.0f);
+                }
+            }
+            store_pixel(start + index * pixelStep, channels);
         }
     }
 }
@@ -337,19 +260,26 @@ void gaussian_iir_rgba8888_neon(
     bool doLinear
 ) {
 #if NEON_AVAILABLE
-    if (sigma <= 0.1f || w <= 0 || h <= 0 || !base) {
+    if (!std::isfinite(sigma) || sigma <= 0.1f ||
+        w <= 0 || h <= 0 || !base || stride / 4 < w) {
         return;
     }
     
-    DericheCoeffs c = compute_deriche_coeffs(sigma);
+    DericheCoeffs c = compute_deriche_coeffs(std::min(sigma, 50.0f));
     
-    int maxDim = std::max(w, h);
-    float* workBuf = new float[maxDim * 4];
-    
-    blur_horizontal_neon(base, w, h, stride, c, workBuf, doLinear);
-    blur_vertical_neon(base, w, h, stride, c, workBuf, doLinear);
-    
-    delete[] workBuf;
+    const size_t maxDim = std::max(w, h);
+    std::unique_ptr<float32x4_t[]> workBuf(new (std::nothrow) float32x4_t[maxDim * 2]);
+    if (!workBuf) {
+        LOGE("Unable to allocate NEON IIR work buffer");
+        return;
+    }
+    if (doLinear) {
+        blur_lines_neon<true>(base, w, h, 4, stride, c, workBuf.get());
+        blur_lines_neon<true>(base, h, w, stride, 4, c, workBuf.get());
+    } else {
+        blur_lines_neon<false>(base, w, h, 4, stride, c, workBuf.get());
+        blur_lines_neon<false>(base, h, w, stride, 4, c, workBuf.get());
+    }
     
     LOGD("NEON blur: %dx%d, sigma=%.2f, linear=%d", w, h, sigma, doLinear);
 #else

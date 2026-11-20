@@ -13,7 +13,9 @@ package com.example.liquidglass
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import java.util.EnumMap
 import kotlin.math.*
+import androidx.core.graphics.createBitmap
 
 /**
  * 位移贴图模式
@@ -44,25 +46,21 @@ class DisplacementMapGenerator(
      * @return 位移贴图 Bitmap
      */
     fun generate(mode: DisplacementMode = DisplacementMode.STANDARD): Bitmap {
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        
         // 第一遍:计算原始位移值
         val rawDisplacements = Array(height) { y ->
-            FloatArray(width * 2) { x ->
-                val pixelX = x / 2
-                val uv = Vec2(pixelX.toFloat() / width, y.toFloat() / height)
+            val row = FloatArray(width * 2)
+            for (x in 0 until width) {
+                val uv = Vec2(x.toFloat() / width, y.toFloat() / height)
                 val displaced = when (mode) {
                     DisplacementMode.STANDARD -> fragmentShaderStandard(uv)
                     DisplacementMode.POLAR -> fragmentShaderPolar(uv)
                     DisplacementMode.PROMINENT -> fragmentShaderProminent(uv)
                 }
                 
-                if (x % 2 == 0) {
-                    displaced.x * width - pixelX  // dx
-                } else {
-                    displaced.y * height - y       // dy
-                }
+                row[x * 2] = displaced.x * width - x
+                row[x * 2 + 1] = displaced.y * height - y
             }
+            row
         }
         
         // 计算最大位移量(用于归一化)
@@ -102,9 +100,9 @@ class DisplacementMapGenerator(
                 )
             }
         }
-        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-
-        return bitmap
+        return createBitmap(width, height).apply {
+            setPixels(pixels, 0, width, 0, 0, width, height)
+        }
     }
     
     /**
@@ -214,13 +212,28 @@ class DisplacementMapGenerator(
         /**
          * 预生成标准尺寸的位移贴图
          */
-        fun generateStandardMaps(width: Int = 270, height: Int = 69): Map<DisplacementMode, Bitmap> {
+        fun generateStandardMaps(width: Int = 270, height: Int = 69): Map<DisplacementMode, Bitmap> =
+            checkNotNull(generateStandardMaps(width, height) { true })
+
+        internal fun generateStandardMaps(
+            width: Int,
+            height: Int,
+            isCurrent: () -> Boolean
+        ): Map<DisplacementMode, Bitmap>? {
             val generator = DisplacementMapGenerator(width, height)
-            return mapOf(
-                DisplacementMode.STANDARD to generator.generate(DisplacementMode.STANDARD),
-                DisplacementMode.POLAR to generator.generate(DisplacementMode.POLAR),
-                DisplacementMode.PROMINENT to generator.generate(DisplacementMode.PROMINENT)
-            )
+            val maps = EnumMap<DisplacementMode, Bitmap>(DisplacementMode::class.java)
+            var completed = false
+            try {
+                for (mode in DisplacementMode.entries) {
+                    if (!isCurrent()) return null
+                    maps[mode] = generator.generate(mode)
+                }
+                completed = isCurrent()
+                return maps.takeIf { completed }
+            } finally {
+                // 请求作废或生成失败时，释放已经完成的贴图。
+                if (!completed) maps.values.forEach { it.recycle() }
+            }
         }
     }
 }

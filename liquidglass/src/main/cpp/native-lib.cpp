@@ -51,12 +51,17 @@ static bool lock_bitmap(
     JNIEnv* env,
     jobject bitmap,
     AndroidBitmapInfo* info,
-    void** pixels
+    void** pixels,
+    bool writable = false
 ) {
     // 获取 Bitmap 信息
     int ret = AndroidBitmap_getInfo(env, bitmap, info);
     if (ret != ANDROID_BITMAP_RESULT_SUCCESS) {
         LOGE("AndroidBitmap_getInfo failed: %d", ret);
+        if (!env->ExceptionCheck()) {
+            jclass exClass = env->FindClass("java/lang/IllegalStateException");
+            env->ThrowNew(exClass, "Failed to read bitmap information");
+        }
         return false;
     }
     
@@ -76,6 +81,21 @@ static bool lock_bitmap(
         return false;
     }
     
+    // 像素锁也接受不可变位图，写入前单独检查 Java 位图的可变性。
+    if (writable) {
+        jclass bitmapClass = env->GetObjectClass(bitmap);
+        jmethodID isMutable = env->GetMethodID(bitmapClass, "isMutable", "()Z");
+        env->DeleteLocalRef(bitmapClass);
+        if (isMutable == nullptr) return false;
+        const bool mutableBitmap = env->CallBooleanMethod(bitmap, isMutable);
+        if (env->ExceptionCheck()) return false;
+        if (!mutableBitmap) {
+            jclass exClass = env->FindClass("java/lang/IllegalStateException");
+            env->ThrowNew(exClass, "Bitmap must be mutable");
+            return false;
+        }
+    }
+
     // 锁定像素
     ret = AndroidBitmap_lockPixels(env, bitmap, pixels);
     if (ret != ANDROID_BITMAP_RESULT_SUCCESS) {
@@ -111,7 +131,7 @@ Java_com_example_blur_NativeGauss_gaussianIIRInplace(
     void* pixels = nullptr;
     
     // 锁定 Bitmap
-    if (!lock_bitmap(env, bitmap, &info, &pixels)) {
+    if (!lock_bitmap(env, bitmap, &info, &pixels, true)) {
         return; // 异常已在 lock_bitmap 中抛出
     }
     
@@ -147,7 +167,7 @@ Java_com_example_blur_NativeGauss_gaussianIIRNeonInplace(
     void* pixels = nullptr;
 
     // 锁定 Bitmap
-    if (!lock_bitmap(env, bitmap, &info, &pixels)) {
+    if (!lock_bitmap(env, bitmap, &info, &pixels, true)) {
         return;
     }
 
@@ -193,7 +213,7 @@ Java_com_example_blur_NativeGauss_box3Inplace(
     void* pixels = nullptr;
 
     // 锁定 Bitmap
-    if (!lock_bitmap(env, bitmap, &info, &pixels)) {
+    if (!lock_bitmap(env, bitmap, &info, &pixels, true)) {
         return; // 异常已在 lock_bitmap 中抛出
     }
 
@@ -235,7 +255,7 @@ Java_com_example_blur_NativeGauss_advancedBoxBlurInplace(
     void* pixels = nullptr;
 
     // 锁定 Bitmap
-    if (!lock_bitmap(env, bitmap, &info, &pixels)) {
+    if (!lock_bitmap(env, bitmap, &info, &pixels, true)) {
         return; // 异常已在 lock_bitmap 中抛出
     }
 
@@ -279,7 +299,7 @@ Java_com_example_blur_NativeGauss_advancedBoxBlurInplaceHQ(
     void* pixels = nullptr;
 
     // 锁定 Bitmap
-    if (!lock_bitmap(env, bitmap, &info, &pixels)) {
+    if (!lock_bitmap(env, bitmap, &info, &pixels, true)) {
         return; // 异常已在 lock_bitmap 中抛出
     }
 
@@ -347,7 +367,7 @@ Java_com_example_liquidglass_NativeChromaticAberration_chromaticAberrationInplac
     }
 
     // 锁定结果图像
-    if (!lock_bitmap(env, result, &resultInfo, &resultPixels)) {
+    if (!lock_bitmap(env, result, &resultInfo, &resultPixels, true)) {
         AndroidBitmap_unlockPixels(env, source);
         AndroidBitmap_unlockPixels(env, displacement);
         return;
@@ -456,7 +476,7 @@ Java_com_example_liquidglass_NativeChromaticDispersion_chromaticDispersionInplac
     }
 
     // 锁定结果图像
-    if (!lock_bitmap(env, result, &resultInfo, &resultPixels)) {
+    if (!lock_bitmap(env, result, &resultInfo, &resultPixels, true)) {
         AndroidBitmap_unlockPixels(env, source);
         AndroidBitmap_unlockPixels(env, edgeDistance);
         if (hasNormalMap) {

@@ -33,6 +33,8 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <memory>
+#include <new>
 #include <android/log.h>
 
 #define LOG_TAG "GaussIIR"
@@ -45,18 +47,37 @@
 #endif
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// sRGB ↔ Linear 转换（快速近似）
-static inline float srgb_to_linear(float srgb) {
-    // 精确公式：srgb <= 0.04045 ? srgb/12.92 : pow((srgb+0.055)/1.055, 2.4)
-    // 快速近似：pow(srgb, 2.2)，误差 < 2%
-    return srgb * srgb * (srgb * 0.2 + 0.8f); // 更快的 2.2 次方近似
+namespace gauss_color {
+namespace {
+float to_linear(float value) {
+    return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
 }
 
-static inline float linear_to_srgb(float linear) {
-    // 精确公式：linear <= 0.0031308 ? linear*12.92 : 1.055*pow(linear,1/2.4)-0.055
-    // 快速近似：pow(linear, 1/2.2)
-    float x = sqrtf(linear);
-    return x * (1.0f - 0.2f * linear); // 快速 1/2.2 次方近似
+float to_srgb(float value) {
+    return value <= 0.0031308f ? value * 12.92f : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
+}
+}
+
+TransferTables::TransferTables() {
+    for (int index = 0; index <= TABLE_SIZE; ++index) {
+        const float value = static_cast<float>(index) / TABLE_SIZE;
+        decoded[index] = to_linear(value);
+        encoded[index] = to_srgb(value);
+    }
+    for (int index = 0; index < 256; ++index) {
+        decodedOpaque[index] = to_linear(index / 255.0f);
+    }
+    // 高密度表直接输出不透明的 8 位 sRGB，半透明通道仍在线性光中按 Alpha 加权。
+    for (int index = 0; index <= OPAQUE_ENCODE_SIZE; ++index) {
+        const float value = static_cast<float>(index) / OPAQUE_ENCODE_SIZE;
+        encodedOpaque[index] = static_cast<uint8_t>(interpolate(encoded, value) * 255.0f + 0.5f);
+    }
+}
+
+const TransferTables& transfer_tables() {
+    static const TransferTables tables;
+    return tables;
+}
 }
 
 // Deriche 系数结构
@@ -143,6 +164,16 @@ static void iir_filter_1d(const float* src, float* dst, int len, const DericheCo
     }
 }
 
+static void filter_channels(float* channels, int len, const DericheCoeffs& coeffs) {
+    // 反向递归仍需读取原始样本，四个通道依次复用同一输出缓冲。
+    float* filtered = channels + 4 * len;
+    for (int channel = 0; channel < 4; ++channel) {
+        float* samples = channels + channel * len;
+        iir_filter_1d(samples, filtered, len, coeffs);
+        std::copy_n(filtered, len, samples);
+    }
+}
+
 /**
  * 横向模糊（处理所有行）
  */
@@ -169,14 +200,9 @@ static void blur_horizontal(
             float fb = b / 255.0f;
             
             if (doLinear) {
-                // 去预乘 + sRGB→Linear
-                if (fa > 0.001f) {
-                    fr = srgb_to_linear(fr / fa);
-                    fg = srgb_to_linear(fg / fa);
-                    fb = srgb_to_linear(fb / fa);
-                } else {
-                    fr = fg = fb = 0.0f;
-                }
+                fr = gauss_color::decode(fr, fa);
+                fg = gauss_color::decode(fg, fa);
+                fb = gauss_color::decode(fb, fa);
             }
             
             buffer[x] = fr;
@@ -186,10 +212,7 @@ static void blur_horizontal(
         }
         
         // 对每个通道执行 IIR 滤波
-        iir_filter_1d(buffer, buffer, w, c);                  // R
-        iir_filter_1d(buffer + w, buffer + w, w, c);          // G
-        iir_filter_1d(buffer + 2 * w, buffer + 2 * w, w, c);  // B
-        iir_filter_1d(buffer + 3 * w, buffer + 3 * w, w, c);  // A
+        filter_channels(buffer, w, c);
         
         // 写回像素
         for (int x = 0; x < w; ++x) {
@@ -203,9 +226,9 @@ static void blur_horizontal(
             
             if (doLinear) {
                 // Linear→sRGB + 再预乘
-                fr = linear_to_srgb(fr) * fa;
-                fg = linear_to_srgb(fg) * fa;
-                fb = linear_to_srgb(fb) * fa;
+                fr = gauss_color::encode(fr, fa);
+                fg = gauss_color::encode(fg, fa);
+                fb = gauss_color::encode(fb, fa);
             }
             
             // 钳位并转换为 uint8
@@ -247,13 +270,9 @@ static void blur_vertical(
             float fb = b / 255.0f;
             
             if (doLinear) {
-                if (fa > 0.001f) {
-                    fr = srgb_to_linear(fr / fa);
-                    fg = srgb_to_linear(fg / fa);
-                    fb = srgb_to_linear(fb / fa);
-                } else {
-                    fr = fg = fb = 0.0f;
-                }
+                fr = gauss_color::decode(fr, fa);
+                fg = gauss_color::decode(fg, fa);
+                fb = gauss_color::decode(fb, fa);
             }
             
             buffer[y] = fr;
@@ -263,10 +282,7 @@ static void blur_vertical(
         }
         
         // 对每个通道执行 IIR 滤波
-        iir_filter_1d(buffer, buffer, h, c);
-        iir_filter_1d(buffer + h, buffer + h, h, c);
-        iir_filter_1d(buffer + 2 * h, buffer + 2 * h, h, c);
-        iir_filter_1d(buffer + 3 * h, buffer + 3 * h, h, c);
+        filter_channels(buffer, h, c);
         
         // 写回列
         for (int y = 0; y < h; ++y) {
@@ -278,9 +294,9 @@ static void blur_vertical(
             fa = std::max(0.0f, std::min(1.0f, fa));
             
             if (doLinear) {
-                fr = linear_to_srgb(fr) * fa;
-                fg = linear_to_srgb(fg) * fa;
-                fb = linear_to_srgb(fb) * fa;
+                fr = gauss_color::encode(fr, fa);
+                fg = gauss_color::encode(fg, fa);
+                fb = gauss_color::encode(fb, fa);
             }
             
             int r = static_cast<int>(std::max(0.0f, std::min(255.0f, fr * 255.0f + 0.5f)));
@@ -311,7 +327,7 @@ void gaussian_iir_rgba8888_inplace(
     }
     
     // sigma 太小，直接返回
-    if (sigma <= 0.1f) {
+    if (!std::isfinite(sigma) || sigma <= 0.1f) {
         return;
     }
     
@@ -324,18 +340,19 @@ void gaussian_iir_rgba8888_inplace(
     // 计算滤波器系数
     DericheCoeffs c = compute_deriche_coeffs(sigma);
     
-    // 分配工作缓冲（4 通道 × 最大维度）
-    int maxDim = std::max(w, h);
-    float* buffer = new float[maxDim * 4];
+    // 四个输入通道和一个可复用的输出通道。
+    const size_t maxDim = std::max(w, h);
+    std::unique_ptr<float[]> buffer(new (std::nothrow) float[maxDim * 5]);
+    if (!buffer) {
+        LOGE("Unable to allocate IIR work buffer");
+        return;
+    }
     
     // 横向模糊
-    blur_horizontal(base, w, h, stride, c, buffer, doLinear);
+    blur_horizontal(base, w, h, stride, c, buffer.get(), doLinear);
     
     // 纵向模糊
-    blur_vertical(base, w, h, stride, c, buffer, doLinear);
-    
-    // 释放缓冲
-    delete[] buffer;
+    blur_vertical(base, w, h, stride, c, buffer.get(), doLinear);
 }
 
 // 便捷函数

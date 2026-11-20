@@ -11,6 +11,7 @@
 package com.example.blur
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.*
 import org.junit.Test
@@ -97,23 +98,65 @@ class NativeGaussTest {
      */
     @Test
     fun testLinearVsFast() {
-        val bitmap1 = createTestPattern(128, 128)
-        val bitmap2 = bitmap1.copy(Bitmap.Config.ARGB_8888, true)
-        
-        NativeGauss.gaussianIIRInplace(bitmap1, 12f, false)  // Fast
-        NativeGauss.gaussianIIRInplace(bitmap2, 12f, true)   // Linear
-        
-        // 两种模式结果应该不同（但都合理）
-        assertFalse(bitmapsEqual(bitmap1, bitmap2))
-        
-        // 但亮度应该接近
-        val brightness1 = calculateAverageBrightness(bitmap1)
-        val brightness2 = calculateAverageBrightness(bitmap2)
-        val diff = abs(brightness2 - brightness1) / brightness1
-        assertTrue("Brightness diff: ${diff * 100}%", diff < 0.1)
-        
-        bitmap1.recycle()
-        bitmap2.recycle()
+        val fast = createSolidBitmap(128, 128, Color.BLACK)
+        for (y in 0 until fast.height) {
+            for (x in y % 2 until fast.width step 2) fast.setPixel(x, y, Color.WHITE)
+        }
+        val linear = fast.copy(Bitmap.Config.ARGB_8888, true)
+        try {
+            NativeGauss.gaussianIIRInplace(fast, 6f, false)
+            NativeGauss.gaussianIIRInplace(linear, 6f, true)
+
+            // 黑白等权混合在 sRGB 中约为 128，在线性光中混合后编码约为 188。
+            assertEquals(128.0, Color.red(fast.getPixel(64, 64)).toDouble(), 1.0)
+            assertEquals(188.0, Color.red(linear.getPixel(64, 64)).toDouble(), 1.0)
+        } finally {
+            fast.recycle()
+            linear.recycle()
+        }
+    }
+
+    @Test
+    fun testLinearBlurKeepsColorAcrossTransparentEdge() {
+        val bitmap = createSolidBitmap(64, 64, Color.TRANSPARENT)
+        for (y in 0 until bitmap.height) {
+            for (x in 0 until bitmap.width / 2) bitmap.setPixel(x, y, Color.RED)
+        }
+        val neon = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        try {
+            NativeGauss.gaussianIIRInplace(bitmap, 6f, true)
+            val edge = bitmap.getPixel(32, 32)
+            assertTrue(Color.alpha(edge) in 100..140)
+            assertEquals(255, Color.red(edge))
+            assertEquals(0, Color.green(edge))
+            assertEquals(0, Color.blue(edge))
+            if (NativeGauss.hasNeonSupport()) {
+                NativeGauss.gaussianIIRNeonInplace(neon, 6f, true)
+                assertTrue(bitmapsEqual(bitmap, neon))
+            }
+        } finally {
+            bitmap.recycle()
+            neon.recycle()
+        }
+    }
+
+    @Test
+    fun testNeonMatchesScalarOnOddSizedOpaqueImage() {
+        if (!NativeGauss.hasNeonSupport()) return
+        for (linear in listOf(false, true)) {
+            val scalar = createTestPattern(129, 67)
+            val neon = scalar.copy(Bitmap.Config.ARGB_8888, true)
+            try {
+                NativeGauss.gaussianIIRInplace(scalar, 12f, linear)
+                NativeGauss.gaussianIIRNeonInplace(neon, 12f, linear)
+                val psnr = calculatePSNR(scalar, neon)
+                assertTrue("linear=$linear, PSNR=$psnr", psnr > 50.0)
+                assertEquals(255, Color.alpha(neon.getPixel(128, 66)))
+            } finally {
+                scalar.recycle()
+                neon.recycle()
+            }
+        }
     }
     
     /**
@@ -167,16 +210,43 @@ class NativeGaussTest {
      */
     @Test
     fun testLargeSigma() {
-        val bitmap = createTestPattern(128, 128)
-        
-        // σ = 30 应该产生非常强的模糊
-        NativeGauss.gaussianIIRInplace(bitmap, 30f, false)
-        
-        // 检查结果是否接近均匀（方差应该很小）
-        val variance = calculateVariance(bitmap)
-        assertTrue("Variance: $variance", variance < 500.0)
-        
-        bitmap.recycle()
+        val bitmap = createSolidBitmap(256, 1, Color.BLACK)
+        for (x in 128 until bitmap.width) bitmap.setPixel(x, 0, Color.WHITE)
+        val neon = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        try {
+            NativeGauss.gaussianIIRInplace(bitmap, 30f, false)
+
+            // 阶跃边缘的高斯响应是累积分布，距边缘一倍 σ 处约为 40 和 215。
+            assertEquals(40.0, Color.red(bitmap.getPixel(98, 0)).toDouble(), 5.0)
+            assertEquals(128.0, Color.red(bitmap.getPixel(128, 0)).toDouble(), 3.0)
+            assertEquals(215.0, Color.red(bitmap.getPixel(157, 0)).toDouble(), 5.0)
+            if (NativeGauss.hasNeonSupport()) {
+                NativeGauss.gaussianIIRNeonInplace(neon, 30f, false)
+                assertTrue(bitmapsEqual(bitmap, neon))
+            }
+        } finally {
+            bitmap.recycle()
+            neon.recycle()
+        }
+    }
+
+    @Test
+    fun testInvalidSigmaKeepsOriginalPixels() {
+        val bitmap = createTestPattern(16, 9)
+        val original = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        try {
+            for (sigma in listOf(Float.NaN, Float.POSITIVE_INFINITY)) {
+                NativeGauss.gaussianIIRInplace(bitmap, sigma, false)
+                assertTrue(bitmapsEqual(original, bitmap))
+                if (NativeGauss.hasNeonSupport()) {
+                    NativeGauss.gaussianIIRNeonInplace(bitmap, sigma, false)
+                    assertTrue(bitmapsEqual(original, bitmap))
+                }
+            }
+        } finally {
+            bitmap.recycle()
+            original.recycle()
+        }
     }
     
     /**
@@ -252,23 +322,6 @@ class NativeGaussTest {
         }
         
         return sum / pixels.size
-    }
-    
-    private fun calculateVariance(bitmap: Bitmap): Double {
-        val mean = calculateAverageBrightness(bitmap)
-        var sumSq = 0.0
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        
-        for (pixel in pixels) {
-            val r = (pixel shr 16) and 0xFF
-            val g = (pixel shr 8) and 0xFF
-            val b = pixel and 0xFF
-            val brightness = (r + g + b) / 3.0
-            sumSq += (brightness - mean) * (brightness - mean)
-        }
-        
-        return sumSq / pixels.size
     }
     
     private fun calculatePSNR(b1: Bitmap, b2: Bitmap): Double {

@@ -53,15 +53,17 @@ object NativeGauss {
      *
      * @param bitmap 待处理位图（ARGB_8888, mutable）
      * @param sigma 高斯标准差，推荐范围 [2.0, 30.0]
-     *              - σ ≤ 0.1：直接返回，不做处理
+     *              - 非有限值或 σ ≤ 0.1：直接返回
+     *              - σ > 50：按 50 处理
      *              - σ = 6：轻度模糊，感知半径 ≈ 18px
      *              - σ = 12：中度模糊，感知半径 ≈ 36px
      *              - σ = 18：强烈模糊，感知半径 ≈ 54px
      * @param linear 是否在线性色彩空间处理
-     *              - true：sRGB→Linear→处理→sRGB，质量最佳，无带状，耗时 +15%
-     *              - false：直接在 sRGB 空间处理，性能最优，强模糊可能轻微带状
+     *              - true：在线性光中按 Alpha 加权滤波，再转回 sRGB
+     *              - false：直接在 sRGB 中滤波，省去色彩转换
      *
-     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888 或不可编辑
+     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888
+     * @throws IllegalStateException 如果 Bitmap 不可编辑或无法读取像素
      */
     external fun gaussianIIRInplace(
         bitmap: Bitmap,
@@ -73,16 +75,16 @@ object NativeGauss {
      * IIR 递归高斯模糊（NEON 优化版本，原位处理）
      *
      * 性能提升：
-     * - 相比标量版本加速 2-4×
+     * - 使用 NEON 并行计算四个颜色通道
      * - 仅在支持 NEON 的设备上可用
      * - 建议使用 smartBlur() 自动选择最优实现
      *
      * @param bitmap 待处理位图（ARGB_8888, mutable）
-     * @param sigma 高斯标准差
+     * @param sigma 高斯标准差，处理范围与 [gaussianIIRInplace] 相同
      * @param linear 是否在线性色彩空间处理
      *
-     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888 或不可编辑
-     * @throws UnsatisfiedLinkError 如果设备不支持 NEON
+     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888
+     * @throws IllegalStateException 如果 Bitmap 不可编辑或无法读取像素
      */
     external fun gaussianIIRNeonInplace(
         bitmap: Bitmap,
@@ -104,7 +106,8 @@ object NativeGauss {
      *               - radius = 6：中度模糊，近似 σ ≈ 5.0
      *               - radius = 12：强烈模糊，近似 σ ≈ 10.0
      * 
-     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888 或不可编辑
+     * @throws IllegalArgumentException 如果 Bitmap 格式不是 ARGB_8888
+     * @throws IllegalStateException 如果 Bitmap 不可编辑或无法读取像素
      */
     external fun box3Inplace(
         bitmap: Bitmap,

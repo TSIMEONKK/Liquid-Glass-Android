@@ -174,8 +174,9 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   strength passed separately; the alpha carried by `color` is ignored.
 - `LiquidGlassView.skipMapGenOnApi33: Boolean` — classic-pipeline compatibility switch.
   Defaults to `true` below API 33 to avoid allocating displacement maps that are normally
-  unnecessary there; set `false` only when classic displacement-map chromatic aberration is
-  required. XML: `app:skipMapGenOnApi33`.
+  unnecessary there. With the default, API 31/32 keep the GPU blur path and classic
+  displacement-map chromatic aberration is ignored. Set `false` only when that aberration is
+  required; API 31/32 then use the CPU pipeline. XML: `app:skipMapGenOnApi33`.
 - `LiquidGlassView.glassAppearanceListener: ((isOverLight: Boolean) -> Unit)?` — fires when
   the backdrop luminance flips; use it to switch your foreground text between light and dark.
 - `LiquidGlassView.pressScale: Float` — scale while pressed, default `0.95f`, clamped to
@@ -197,8 +198,11 @@ Wrong enum constants are the usual cause of a failed build. These are the only v
   branch that contains the glass is captured last, so siblings drawn after that branch end up
   beneath it, and scale/rotation on containers along the branch is not applied to their content.
 - `LiquidGlassView.setCustomBackdropCapture(capture: (RectF) -> Bitmap?)` — supply the backdrop
-  bitmap yourself. Forces the CPU pipeline (disables the API 31+/33+ GPU paths); prefer
-  `backdropSource` unless the backdrop is not a View at all.
+  bitmap yourself. The CPU pipeline snapshots the caller-owned bitmap, which the caller can
+  reuse across frames. Prefer `backdropSource` for View backdrops.
+- `LiquidGlassView.setBackdropLayerType(view, layerType, paint)` — take over a WebView
+  backdrop layer from automatic cache management. Call on the UI thread so cache release
+  preserves the application's layer and paint.
 - Glass inside a `Dialog` / `BottomSheetDialog` / `PopupWindow` works (own window), with three
   caveats: (1) `backdropSource` is mandatory — point it at
   `activity.findViewById(android.R.id.content)`, and never inside `glass.apply { … }` where

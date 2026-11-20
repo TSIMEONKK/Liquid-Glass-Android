@@ -33,6 +33,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.*
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.MotionEvent
@@ -41,6 +43,11 @@ import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import androidx.annotation.Keep
+import androidx.annotation.UiThread
+import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.createBitmap
+import java.util.concurrent.Executors
 import kotlin.math.*
 
 open class LiquidGlassView @JvmOverloads constructor(
@@ -59,6 +66,14 @@ open class LiquidGlassView @JvmOverloads constructor(
         private const val ADAPTIVE_REFRACT_RATIO = 0.7f
         private const val ADAPTIVE_RIM_RATIO = 0.05f
         private const val RIM_BAND_MAX_PX = 6f
+        private const val DRAW_RATE_WINDOW_NS = 1_000_000_000L
+        private const val MAX_DISPLACEMENT_MAP_PIXELS = 256 * 1024
+        private const val MAX_DISPLACEMENT_MAP_EDGE = 2048
+        private val displacementExecutor = Executors.newSingleThreadExecutor { task ->
+            // 守护线程不阻止进程退出；Android 进程存活仍由主线程和系统生命周期决定。
+            Thread(task, "LiquidGlass-DispMap").apply { isDaemon = true }
+        }
+        private val displacementMainHandler by lazy { Handler(Looper.getMainLooper()) }
         private const val ENABLE_PERFORMANCE_LOG = false  // 性能日志开关（仅调试时打开，每帧构造日志字符串有开销）
         private const val ENABLE_MEMORY_LOG = false  // 内存日志开关（默认关闭，避免日志污染）
 
@@ -68,15 +83,36 @@ open class LiquidGlassView @JvmOverloads constructor(
          * 也防止采样画布（软件渲染）级联触发其他玻璃视图的完整 CPU 管线
          */
         internal var isLuminanceSampling = false
+
+        /**
+         * 由应用接管背景视图的图层。库会保留该视图的图层设置，包括硬件层画笔。
+         * 应在主线程对实际使用硬件缓存的 WebView 或视口容器调用。
+         */
+        @JvmStatic
+        @JvmOverloads
+        @UiThread
+        fun setBackdropLayerType(view: View, layerType: Int, paint: Paint? = null) {
+            view.setLayerType(layerType, paint)
+            WebViewBackdropCache.relinquishLayer(view)
+        }
     }
 
     // ✅ 效果开关
     var enableBackdropBlur = true  // 背景模糊
+        set(value) {
+            if (field == value) return
+            field = value
+            // 关闭时缓存直接引用原图，重新开启需要重算模糊，即使画面和半径未变。
+            blurDirty = true
+            invalidate()
+        }
     var enableChromaticAberration = true  // 色差效果
         set(value) {
             if (field != value) {
                 field = value
                 aberrationDirty = true
+                // 经典管线需要异步位移贴图；透镜管线可跳过，由 maybeGenerate 内部判断。
+                if (value) maybeGenerateDisplacementMaps()
                 if (ENABLE_PERFORMANCE_LOG) {
                     Log.d(TAG, "🔄 切换色差效果: $value, aberrationDirty=$aberrationDirty")
                 }
@@ -96,10 +132,7 @@ open class LiquidGlassView @JvmOverloads constructor(
             field = value
             if (value) {
                 // 使进行中的异步任务失效，并释放已生成的贴图。
-                mapGenerationId++
-                mapGenerationPending = false
-                displacementMaps?.values?.forEach { it.recycle() }
-                displacementMaps = null
+                clearDisplacementMaps()
                 aberrationDirty = true
                 invalidate()
             } else {
@@ -234,8 +267,9 @@ open class LiquidGlassView @JvmOverloads constructor(
 
     var dispersionFactor = 1.5f
         set(value) {
-            if (field != value) {
-                field = value
+            val factor = ChromaticDispersionEffect.normalizeRefFactor(value)
+            if (field != factor) {
+                field = factor
                 dispersionDirty = true
                 invalidate()
             }
@@ -294,6 +328,8 @@ open class LiquidGlassView @JvmOverloads constructor(
             if (field != value) {
                 field = value
                 aberrationDirty = true
+                // 从 0 调到正值时，旧管线可能还没有可用的位移贴图。
+                if (value > 0f) maybeGenerateDisplacementMaps()
                 invalidate()
             }
         }
@@ -489,7 +525,8 @@ open class LiquidGlassView @JvmOverloads constructor(
         set(value) {
             if (field != value) {
                 field = value
-                if (!value) ensureDisplacementMaps()
+                // 关闭透镜或透镜不可用时，经典管线可能需要位移贴图。
+                maybeGenerateDisplacementMaps()
                 updateSensorRegistration()
                 blurDirty = true
                 aberrationDirty = true
@@ -686,6 +723,29 @@ open class LiquidGlassView @JvmOverloads constructor(
      */
     protected open val effectiveGlassTint: Int
         get() = glassTint
+
+    private class LensSurfaceOverlay(
+        val color: () -> Int,
+        val highlightOpacity: Float,
+        val onDrawn: () -> Unit
+    )
+
+    private var lensSurfaceOverlay: LensSurfaceOverlay? = null
+
+    /**
+     * 自定义 AGSL 表面底色和高光。底色叠在固定材质染色上，再由透镜着色器绘制高光。
+     * 只有透镜绘制成功才调用 [onDrawn]，宿主可据此为兼容路径补绘底色。
+     */
+    @Keep
+    fun setLensSurfaceOverlay(
+        color: () -> Int,
+        highlightOpacity: Float,
+        onDrawn: () -> Unit
+    ) {
+        lensSurfaceOverlay = LensSurfaceOverlay(color, highlightOpacity.coerceIn(0f, 100f), onDrawn)
+        Log.d(TAG, "setLensSurfaceOverlay: highlight=$highlightOpacity")
+        invalidate()
+    }
 
     /** 无障碍渲染模式（AUTO 跟随系统「高对比度文字」自动退化为不透明材质） */
     var accessibilityMode = GlassAccessibilityMode.AUTO
@@ -885,8 +945,11 @@ open class LiquidGlassView @JvmOverloads constructor(
 
     // 位移贴图缓存（跨 detach 保留，仅尺寸变化时重建；透镜管线不需要）
     private var displacementMaps: Map<DisplacementMode, Bitmap>? = null
-    private var mapGenerationId = 0  // 异步生成版本号，防止过期结果覆盖
-    private var mapGenerationPending = false  // 防止旧管线每帧重复触发生成
+    private data class DisplacementMapSize(val width: Int, val height: Int)
+
+    @Volatile
+    private var requestedDisplacementMap: DisplacementMapSize? = null
+    private var displacementWorkerRunning = false
 
     // ✅ 智能缓存机制 - 分层缓存策略
     private var cachedBackdrop: Bitmap? = null          // L1: 原始背景
@@ -948,6 +1011,11 @@ open class LiquidGlassView @JvmOverloads constructor(
 
     /** 是否采集每帧统计（仅几次 System.nanoTime() 调用，开销可忽略，默认开启） */
     var collectFrameStats = true
+        set(value) {
+            if (field == value) return
+            field = value
+            lastDrawNs = 0L
+        }
 
     /** 最近一帧的渲染统计（供性能监控 UI 轮询读取） */
     @Volatile
@@ -961,6 +1029,15 @@ open class LiquidGlassView @JvmOverloads constructor(
     private var fpsWindowStartNs = 0L
     private var fpsFrameCount = 0
     private var measuredFps = 0
+    private var lastDrawNs = 0L
+
+    /** 在主线程读取。无样本或首个统计窗口尚未结束时返回 null，空闲满一秒后返回 0。 */
+    val currentDrawRate: Int?
+        get() {
+            if (!collectFrameStats || lastDrawNs == 0L) return null
+            if (System.nanoTime() - lastDrawNs >= DRAW_RATE_WINDOW_NS) return 0
+            return measuredFps.takeIf { it > 0 }
+        }
 
     // ✅ API 31+ 全 GPU 模糊渲染器（延迟创建）
     private var hardwareBlur: HardwareBackdropBlur? = null
@@ -969,14 +1046,15 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 允许在 API 31+ 使用全 GPU 渲染路径（RenderNode + RenderEffect）
      *
      * 该路径零 Bitmap 分配、零 CPU 像素处理、零 GPU→CPU 回读，
-     * 目前覆盖"背景模糊 + 饱和度"；开启色差/色散或自定义背景捕获时
-     * 自动回退到 CPU 管线
+     * 覆盖"背景模糊 + 饱和度"；API 33+ 在位移贴图就绪后还可追加 GPU 色差。
+     * 色散、显式要求但 GPU 无法交付的经典色差、自定义背景捕获会回退 CPU。
      */
     var useHardwareBlurWhenPossible = true
         set(value) {
             if (field != value) {
                 field = value
-                if (!value) ensureDisplacementMaps()
+                // 硬件路径关闭后可能落回经典 CPU 色差，提前准备贴图。
+                maybeGenerateDisplacementMaps()
                 updateSensorRegistration()
                 blurDirty = true
                 aberrationDirty = true
@@ -1235,24 +1313,54 @@ open class LiquidGlassView @JvmOverloads constructor(
         val h = height
         if (w <= 0 || h <= 0) return
 
-        val genId = ++mapGenerationId
-        mapGenerationPending = true
-        Thread({
-            val maps = DisplacementMapGenerator.generateStandardMaps(w, h)
-            post {
-                // 生成期间尺寸又变了/有更新的请求 → 丢弃本次结果
-                if (genId != mapGenerationId || w != width || h != height) {
-                    maps.values.forEach { it.recycle() }
-                    if (genId == mapGenerationId) mapGenerationPending = false
-                    return@post
+        // 两个渲染器都会按输出尺寸采样贴图，大视图只需生成有界的同宽高比贴图。
+        val scale = minOf(
+            1.0,
+            MAX_DISPLACEMENT_MAP_EDGE.toDouble() / maxOf(w, h),
+            sqrt(MAX_DISPLACEMENT_MAP_PIXELS.toDouble() / (w.toDouble() * h))
+        )
+        val size = DisplacementMapSize(
+            (w * scale).toInt().coerceAtLeast(1),
+            (h * scale).toInt().coerceAtLeast(1)
+        )
+        if (requestedDisplacementMap == size) return
+        clearDisplacementMaps()
+        requestedDisplacementMap = size
+        if (!displacementWorkerRunning) startDisplacementMapWorker(size)
+    }
+
+    private fun clearDisplacementMaps() {
+        requestedDisplacementMap = null
+        displacementMaps?.values?.forEach { it.recycle() }
+        displacementMaps = null
+    }
+
+    private fun startDisplacementMapWorker(size: DisplacementMapSize) {
+        displacementWorkerRunning = true
+        displacementExecutor.execute {
+            val maps = try {
+                DisplacementMapGenerator.generateStandardMaps(size.width, size.height) {
+                    requestedDisplacementMap === size
                 }
-                displacementMaps?.values?.forEach { it.recycle() }
-                displacementMaps = maps
-                mapGenerationPending = false
-                aberrationDirty = true
-                invalidate()
+            } catch (failure: OutOfMemoryError) {
+                // 当前尺寸维持无经典色差的回退，避免每帧重新分配失败。
+                Log.w(TAG, "Unable to allocate displacement maps for $size", failure)
+                null
             }
-        }, "LiquidGlass-DispMap").start()
+            displacementMainHandler.post {
+                displacementWorkerRunning = false
+                val latest = requestedDisplacementMap
+                if (latest === size && maps != null) {
+                    displacementMaps?.values?.forEach { it.recycle() }
+                    displacementMaps = maps
+                    aberrationDirty = true
+                    invalidate()
+                } else {
+                    maps?.values?.forEach { it.recycle() }
+                    if (latest != null && latest !== size) startDisplacementMapWorker(latest)
+                }
+            }
+        }
     }
 
     /** 透镜管线（API 33+）不使用位移贴图；仅旧管线可能用到时才生成 */
@@ -1262,22 +1370,22 @@ open class LiquidGlassView @JvmOverloads constructor(
             debugApiLevelCap >= Build.VERSION_CODES.TIRAMISU &&
             GlassLensRenderer.isSupported() && lensRenderer?.isAvailable != false
 
-    private fun maybeGenerateDisplacementMaps() {
-        if (!shouldGenerateDisplacementMaps() || lensPathLikely()) return
+    private fun maybeGenerateDisplacementMaps(): Boolean {
+        if (width <= 0 || height <= 0 || !needsDisplacementMaps() || lensPathLikely()) return false
         generateDisplacementMaps()
+        return true
     }
 
     /** 旧管线需要位移贴图但尚未生成时补一次生成 */
     private fun ensureDisplacementMaps() {
-        if (shouldGenerateDisplacementMaps() && displacementMaps == null && !mapGenerationPending &&
-            width > 0 && height > 0
-        ) {
+        if (needsDisplacementMaps() && displacementMaps == null) {
             generateDisplacementMaps()
         }
     }
 
-    /** 仅在未要求跳过经典管线贴图时生成。 */
-    private fun shouldGenerateDisplacementMaps(): Boolean = !skipMapGenOnApi33
+    /** 仅为实际使用经典色差的管线生成贴图。 */
+    private fun needsDisplacementMaps(): Boolean =
+        !skipMapGenOnApi33 && enableChromaticAberration && aberrationIntensity > 0f
 
     /**
      * 更新阴影效果
@@ -1293,10 +1401,8 @@ open class LiquidGlassView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
 
-        // 重新生成位移贴图（透镜管线跳过）
-        if (w > 0 && h > 0) {
-            maybeGenerateDisplacementMaps()
-        }
+        // 透镜或零尺寸布局也要作废旧请求，防止软件回退接到上一尺寸的结果。
+        if (!maybeGenerateDisplacementMaps()) clearDisplacementMaps()
 
         // 更新圆角裁剪路径
         updateClipPath()
@@ -1333,11 +1439,17 @@ open class LiquidGlassView @JvmOverloads constructor(
         // ✅ 实测帧率统计（每秒结算一次）
         if (collectFrameStats) {
             val now = System.nanoTime()
-            if (fpsWindowStartNs == 0L) fpsWindowStartNs = now
+            // 重新开始绘制时开一个新窗口，避免把之前的空闲时间算入频率。
+            if (lastDrawNs == 0L || now - lastDrawNs >= DRAW_RATE_WINDOW_NS) {
+                fpsWindowStartNs = now
+                fpsFrameCount = 0
+                measuredFps = 0
+            }
+            lastDrawNs = now
             fpsFrameCount++
             val elapsed = now - fpsWindowStartNs
-            if (elapsed >= 1_000_000_000L) {
-                measuredFps = (fpsFrameCount * 1_000_000_000L / elapsed).toInt()
+            if (elapsed >= DRAW_RATE_WINDOW_NS) {
+                measuredFps = (fpsFrameCount * DRAW_RATE_WINDOW_NS / elapsed).toInt()
                 fpsFrameCount = 0
                 fpsWindowStartNs = now
             }
@@ -1371,6 +1483,15 @@ open class LiquidGlassView @JvmOverloads constructor(
     private fun releaseBackdropCaches() {
         if (Build.VERSION.SDK_INT >= 33) lensRenderer?.releaseBackdropCache()
         if (Build.VERSION.SDK_INT >= 31) hardwareBlur?.releaseBackdropCache()
+    }
+
+    private fun hasSoftwareLayerInHierarchy(): Boolean {
+        var current: View? = this
+        while (current != null) {
+            if (current.layerType == View.LAYER_TYPE_SOFTWARE) return true
+            current = current.parent as? View
+        }
+        return false
     }
 
     /**
@@ -1414,10 +1535,16 @@ open class LiquidGlassView @JvmOverloads constructor(
             return
         }
 
-        releaseBackdropCaches()
+        // 软件截图不会替换屏幕上的 GPU 显示列表，保留它持有的 WebView 图层。
+        if (canvas.isHardwareAccelerated || !isHardwareAccelerated ||
+            !useHardwareBlurWhenPossible || debugApiLevelCap < Build.VERSION_CODES.S ||
+            customBackdropCapture != null || hasSoftwareLayerInHierarchy()
+        ) {
+            releaseBackdropCaches()
+        }
 
         // 旧管线需要位移贴图（透镜管线跳过了生成，回退时补上）
-        if (enableChromaticAberration && displacementMaps == null) {
+        if (needsDisplacementMaps() && displacementMaps == null) {
             ensureDisplacementMaps()
         }
 
@@ -1597,7 +1724,10 @@ open class LiquidGlassView @JvmOverloads constructor(
         }
 
         // —— 高光：沿用边缘高光开关/不透明度，乘材质增益 ——
-        val spec = if (enableEdgeHighlight) (edgeHighlightOpacity / 100f) * material.specBoost else 0f
+        val overlay = lensSurfaceOverlay
+        val lensHighlight = overlay?.highlightOpacity
+            ?: if (enableEdgeHighlight) edgeHighlightOpacity else 0f
+        val spec = (lensHighlight / 100f) * material.specBoost
 
         // —— 光源方向（量化到 0.005，避免静止时反复重建 effect） ——
         val sensorActive = enableSensorHighlight && !a11yReducedMotion && !a11yPowerSave
@@ -1630,7 +1760,12 @@ open class LiquidGlassView @JvmOverloads constructor(
 
         // —— 染色：Regular + 自适应时改走着色器内逐像素染色；tint 固定传 0，
         // 避免亮度采样 tick 更新全局染色触发无意义的 effect 重建 ——
-        val adaptivePerPixel = material.adaptiveTint && enableAdaptiveTint
+        val adaptivePerPixel = overlay == null && material.adaptiveTint && enableAdaptiveTint
+        val surfaceTint = when {
+            adaptivePerPixel -> Color.TRANSPARENT
+            overlay != null -> ColorUtils.compositeColors(overlay.color(), currentTintColor())
+            else -> currentTintColor()
+        }
 
         val params = GlassLensRenderer.LensParams(
             blurRadius = radius,
@@ -1649,7 +1784,7 @@ open class LiquidGlassView @JvmOverloads constructor(
             dispersion = disp,
             lightX = lx, lightY = ly,
             spec = spec,
-            tint = if (adaptivePerPixel) 0 else currentTintColor(),
+            tint = surfaceTint,
             adaptiveTint = adaptivePerPixel,
             glassTint = effectiveGlassTint,
             dim = material.dimAmount,
@@ -1659,6 +1794,7 @@ open class LiquidGlassView @JvmOverloads constructor(
         )
 
         val ok = renderer.draw(canvas, this, params, margin)
+        if (ok) overlay?.onDrawn?.invoke()
 
         if (ok && collectFrameStats) {
             // GPU 路径只统计 CPU 侧的录制耗时（实际着色在 GPU 异步执行）
@@ -1856,7 +1992,8 @@ open class LiquidGlassView @JvmOverloads constructor(
      * 覆盖范围：
      * - API 31+：背景模糊 + 饱和度（RenderEffect）
      * - API 33+：额外支持色差（RuntimeShader，与 CPU 实现同一套位移贴图算法）
-     * - 色散、自定义背景捕获仍走 CPU 管线
+     * - 色散、自定义背景捕获仍走 CPU 管线；API 31/32 只有显式关闭
+     *   [skipMapGenOnApi33] 时才为了经典色差回退 CPU，默认保留 GPU 模糊
      *
      * 满足条件时不产生任何 Bitmap 分配与 CPU 像素处理。
      *
@@ -1870,22 +2007,35 @@ open class LiquidGlassView @JvmOverloads constructor(
         if (enableChromaticDispersion) return false
         if (customBackdropCapture != null) return false
 
-        // 色差：API 33+ 用 RuntimeShader 在 GPU 上完成；32 及以下回退 CPU
+        // 色差：API 33+ 用 RuntimeShader 在 GPU 上完成；32 及以下只有显式
+        // 要求经典色差时才回退 CPU。默认跳过位移贴图时，色差本来就没有
+        // 可交付内容，不能因此连带丢失 GPU 模糊。
         val wantsAberration = enableChromaticAberration && aberrationIntensity > 0f
+        val classicAberrationRequested = wantsAberration && !skipMapGenOnApi33
         var aberrationParams: HardwareBackdropBlur.AberrationParams? = null
-        if (wantsAberration) {
-            if (!HardwareBackdropBlur.supportsRuntimeShader()) return false
-            if (debugApiLevelCap < Build.VERSION_CODES.TIRAMISU) return false
-            // 位移贴图尚未生成时先回退 CPU（CPU 路径同样会跳过色差）
-            val map = displacementMaps?.get(displacementMode) ?: return false
-            val effectiveScale = if (overLight) displacementScale * 0.5f else displacementScale
-            aberrationParams = HardwareBackdropBlur.AberrationParams(
-                displacementMap = map,
-                displacementScale = effectiveScale,
-                redOffset = aberrationRedOffset * aberrationIntensity,
-                greenOffset = aberrationGreenOffset * aberrationIntensity,
-                blueOffset = aberrationBlueOffset * aberrationIntensity
-            )
+        if (classicAberrationRequested && displacementMaps == null) {
+            // 先启动异步生成，当前帧继续用 GPU 模糊，完成后自动升级为 GPU 色差。
+            ensureDisplacementMaps()
+        }
+        if (wantsAberration &&
+            HardwareBackdropBlur.supportsRuntimeShader() &&
+            debugApiLevelCap >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            // 贴图生成期间先保留 GPU 模糊，避免主线程为了等待贴图整段掉到 CPU。
+            val map = displacementMaps?.get(displacementMode)
+            if (map != null) {
+                val effectiveScale = if (overLight) displacementScale * 0.5f else displacementScale
+                aberrationParams = HardwareBackdropBlur.AberrationParams(
+                    displacementMap = map,
+                    displacementScale = effectiveScale,
+                    redOffset = aberrationRedOffset * aberrationIntensity,
+                    greenOffset = aberrationGreenOffset * aberrationIntensity,
+                    blueOffset = aberrationBlueOffset * aberrationIntensity
+                )
+            }
+        } else if (classicAberrationRequested) {
+            // API 31/32 没有色差 RuntimeShader，只能走 CPU 经典管线交付。
+            return false
         }
 
         val startNs = if (collectFrameStats) System.nanoTime() else 0L
@@ -1937,10 +2087,83 @@ open class LiquidGlassView @JvmOverloads constructor(
     /**
      * 设置自定义背景捕获器
      *
-     * 用于支持固定玻璃组件捕获滚动背景
+     * 用于支持固定玻璃组件捕获滚动背景。回调在主线程调用，返回的位图归调用方所有。
+     * 玻璃渲染时保存自己的快照，调用方可以在后续帧更新并返回同一位图。
+     * 带透明通道的非预乘位图会转换为预乘的 sRGB 快照。
      */
     fun setCustomBackdropCapture(capture: (RectF) -> Bitmap?) {
         customBackdropCapture = capture
+        invalidate()
+    }
+
+    private fun snapshotCustomBackdrop(source: Bitmap, reusableBackdrop: Bitmap?): Bitmap? {
+        if (source.isRecycled) return null
+        // 亮度采样、模糊和缓存复制都需要可由 CPU 读取的位图。
+        val readable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            source.config == Bitmap.Config.HARDWARE
+        ) {
+            source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+        } else {
+            source
+        }
+        val software = if (readable.hasAlpha() && !readable.isPremultiplied) {
+            try {
+                premultiplyBackdrop(readable)
+            } finally {
+                if (readable !== source) readable.recycle()
+            }
+        } else readable
+
+        val factor = globalDownsampleFactor.takeIf { it < 1f } ?: 1f
+        val scaledWidth = (software.width * factor).toInt().coerceAtLeast(1)
+        val scaledHeight = (software.height * factor).toInt().coerceAtLeast(1)
+        val unscaled = scaledWidth == software.width && scaledHeight == software.height
+        if (unscaled) {
+            // 先比较完整像素，静态背景直接复用库持有的快照，无需分配和复制整图。
+            if (reusableBackdrop != null && sameSoftwareBackdrop(software, reusableBackdrop)) {
+                if (software !== source) software.recycle()
+                return reusableBackdrop
+            }
+            // 背景变化时保存独立快照，后续仍能检测对原位图的原地更新。
+            return if (software === source) {
+                software.copy(software.config ?: Bitmap.Config.ARGB_8888, false)
+            } else software
+        }
+
+        val scaled = try {
+            Bitmap.createScaledBitmap(software, scaledWidth, scaledHeight, true)
+        } finally {
+            if (software !== source) software.recycle()
+        }
+        if (reusableBackdrop != null && sameSoftwareBackdrop(scaled, reusableBackdrop)) {
+            scaled.recycle()
+            return reusableBackdrop
+        }
+        return scaled
+    }
+
+    private fun premultiplyBackdrop(source: Bitmap): Bitmap {
+        // getPixels 读出非预乘的 sRGB 色值，setPixels 写入时执行实际的 Alpha 预乘。
+        val row = IntArray(source.width)
+        val snapshot = createBitmap(source.width, source.height)
+        snapshot.density = source.density
+        try {
+            for (y in 0 until source.height) {
+                source.getPixels(row, 0, source.width, 0, y, source.width, 1)
+                snapshot.setPixels(row, 0, source.width, 0, y, source.width, 1)
+            }
+            return snapshot
+        } catch (failure: Throwable) {
+            snapshot.recycle()
+            throw failure
+        }
+    }
+
+    @UiThread
+    @SuppressLint("WrongThread", "ThreadConstraint", "UnsatisfiableThreadConstraint")
+    private fun sameSoftwareBackdrop(current: Bitmap, previous: Bitmap): Boolean {
+        // 软件位图在原生层逐行比较，保留边缘像素变化检测，且无需复制像素或等待后台线程。
+        return current.sameAs(previous)
     }
 
     /**
@@ -1976,21 +2199,19 @@ open class LiquidGlassView @JvmOverloads constructor(
         // 1. 捕获背景（L1 缓存）- 每帧都捕获以支持动态背景
         // ✅ 内置捕获路径直接在缩小的 Canvas 上绘制父视图，
         //    避免"全尺寸截图 + createScaledBitmap"的额外分配和缩放 pass
-        var backdrop = if (customBackdropCapture != null) {
-            customBackdropCapture?.invoke(bounds)?.let { full ->
-                if (globalDownsampleFactor < 1.0f) {
-                    val scaledWidth = (full.width * globalDownsampleFactor).toInt().coerceAtLeast(1)
-                    val scaledHeight = (full.height * globalDownsampleFactor).toInt().coerceAtLeast(1)
-                    val scaled = Bitmap.createScaledBitmap(full, scaledWidth, scaledHeight, true)
-                    if (scaled != full) full.recycle()
-                    scaled
-                } else {
-                    full
-                }
-            }
-        } else {
+        val capture = customBackdropCapture
+        val capturedBackdrop = if (capture == null) {
             enhancedBlurEffect.captureBackdrop(bounds, globalDownsampleFactor)
+        } else {
+            capture(bounds)
         }
+        // 捕获回调可能同步改变尺寸并清空缓存，返回后再获取可比较的快照。
+        val previousBackdrop = cachedBackdrop
+        val reusableBackdrop = previousBackdrop?.takeUnless { enableDynamicBackground || it.isRecycled }
+        val customSnapshot = if (capture != null && capturedBackdrop != null) {
+            snapshotCustomBackdrop(capturedBackdrop, reusableBackdrop)
+        } else null
+        var backdrop = if (capture == null) capturedBackdrop else customSnapshot
 
         if (backdrop == null) {
             val fallbackWidth = (width * globalDownsampleFactor).toInt().coerceAtLeast(1)
@@ -2000,21 +2221,20 @@ open class LiquidGlassView @JvmOverloads constructor(
         }
 
         // 完整比较捕获结果：稀疏抽样会漏掉边缘的小范围变化，导致慢速移出后残留旧画面。
-        // sameAs 在原生层比较像素；背景完全一致时仍复用后续模糊和色差缓存。
-        val previousBackdrop = cachedBackdrop
-        val backdropChanged = enableDynamicBackground || previousBackdrop == null ||
-            previousBackdrop.isRecycled || !backdrop.sameAs(previousBackdrop)
-        if (backdropChanged) {
-            cachedBackdrop?.recycle()
+        if (customSnapshot == null && reusableBackdrop != null &&
+            sameSoftwareBackdrop(backdrop, reusableBackdrop)
+        ) {
+            backdrop.recycle()
+            backdrop = reusableBackdrop
+        }
+        if (backdrop !== reusableBackdrop) {
+            previousBackdrop?.recycle()
             cachedBackdrop = backdrop
             blurDirty = true
             // 亮度自适应：CPU 路径直接复用背景位图采样，零额外捕获开销
             if (enableAdaptiveTint && material.adaptiveTint) {
                 luminanceMeter?.submit(BackdropLuminanceMeter.measureBitmap(backdrop))
             }
-        } else {
-            // 背景没变化，回收新捕获的
-            backdrop.recycle()
         }
 
         if (collectTiming) t2 = System.nanoTime()
@@ -2122,7 +2342,9 @@ open class LiquidGlassView @JvmOverloads constructor(
 
             val effectName = when {
                 enableChromaticDispersion -> "Dispersion"
-                enableChromaticAberration -> "Aberration"
+                // 贴图未就绪或显式跳过时，经典色差实际上没有应用，指标不能虚报。
+                enableChromaticAberration && aberrationIntensity > 0f && displacementMap != null ->
+                    "Aberration"
                 else -> "None"
             }
 
@@ -2365,9 +2587,22 @@ open class LiquidGlassView @JvmOverloads constructor(
         invalidate()
     }
 
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (isVisible) {
+            // 祖先恢复可见时可能复用旧的显示列表，需要主动重录背景。
+            invalidate()
+        } else {
+            releaseBackdropCaches()
+        }
+    }
+
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
 
+        if (displacementWorkerRunning || displacementMaps == null) {
+            requestedDisplacementMap = null
+        }
         // ✅ 清理所有缓存和资源
         scaleAnimator?.cancel()
         pressAnimator?.cancel()

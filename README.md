@@ -279,7 +279,7 @@ pipeline; below API 33 they are accepted and silently ignored — no exception i
 | `saturation` | Float | `140f` | percent | 100 = unchanged |
 | `aberrationIntensity` | Float | `2f` | — | Classic RGB-separation strength |
 | `displacementScale` | Float | `70f` | — | Classic edge distortion |
-| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | Classic-pipeline compatibility switch. On API 32 and below it skips displacement-map allocation by default; set `false` to enable classic chromatic aberration. |
+| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | Classic-pipeline compatibility switch. On API 32 and below it skips displacement-map allocation by default, so the GPU-blur path stays active and classic chromatic aberration is ignored. Set `false` only when you need classic chromatic aberration; API 31/32 then use the CPU pipeline to deliver it. |
 | `elasticity` | Float | `0.15f` | — | Touch spring response |
 | `enablePressEffect` | Boolean | `true` | — | Press feedback: scale to `pressScale`, elastic stretch while dragging, lens press deformation (API 33+) |
 | `pressScale` | Float | `0.95f` | 0.5–1.5 | Scale while pressed. Below 1 shrinks, above 1 grows like iOS 26 interactive glass. Uses the View transform, so it may overflow the layout bounds; set `clipChildren="false"` on the parent if the glass touches the parent's edge |
@@ -336,7 +336,7 @@ Exact spelling — invented constants are the usual cause of a failed build.
 | `setSecondaryShape(rect: RectF?, cornerRadiusPx: Float = 999f, smoothing: Float = 48f)` | **33+** Two shapes blend with smooth-min, like mercury |
 | `setGlassTint(color: Int, strength: Float)` | Colour the glass; `strength` 0–1 replaces the alpha carried by `color` |
 | `setBackdropSource(source: View?)` | Capture any view instead of the direct parent — free of the hierarchy, **keeps the GPU pipeline** |
-| `setCustomBackdropCapture(capture: (RectF) -> Bitmap?)` | Supply your own backdrop bitmap. Forces the CPU pipeline — prefer `setBackdropSource` |
+| `setCustomBackdropCapture(capture: (RectF) -> Bitmap?)` | Supply a caller-owned backdrop bitmap. The CPU pipeline takes a snapshot and allows the caller to reuse the bitmap across frames. Prefer `setBackdropSource` for View backdrops. |
 | `refreshAccessibilityState()` | Re-read system accessibility settings |
 
 `ScrollEdgeBlurView` — progressive scroll-edge blur: `edge`, `maxBlurRadius`,
@@ -392,6 +392,9 @@ that contain the glass, and limits the cache to the window size and GPU texture 
 Existing application-owned hardware/software layers are preserved; library-created layers
 are restored after the last glass releases them, changes source, or leaves the GPU path.
 New WebViews and layout changes are handled without enabling continuous glass redraws.
+If the app takes over a layer while glass is using it, call
+`LiquidGlassView.setBackdropLayerType(webViewport, View.LAYER_TYPE_HARDWARE, paint)` on the
+cached view. This keeps the app's layer and paint after the glass releases its cache.
 
 Prefer a viewport-sized WebView that scrolls itself. For a tall `wrap_content` WebView
 inside a `ScrollView`, keep the outer scrolling/container view bounded to the visible
@@ -795,7 +798,7 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 | `saturation` | Float | `140f` | 百分比 | 100 = 不变 |
 | `aberrationIntensity` | Float | `2f` | — | 经典 RGB 分离强度 |
 | `displacementScale` | Float | `70f` | — | 经典边缘畸变 |
-| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | 经典管线兼容开关。API 32 及以下默认跳过位移贴图分配；设为 `false` 可开启经典色差。 |
+| `skipMapGenOnApi33` | Boolean | `< 33: true` | — | 经典管线兼容开关。API 32 及以下默认跳过位移贴图分配，因此保留 GPU 模糊且不显示经典色差；只有确实需要经典色差时才设为 `false`，此时 API 31/32 会走 CPU 管线交付。 |
 | `elasticity` | Float | `0.15f` | — | 触摸弹性响应 |
 | `enablePressEffect` | Boolean | `true` | — | 按压反馈：缩放到 `pressScale`、拖拽弹性拉伸、透镜按压形变（API 33+） |
 | `pressScale` | Float | `0.95f` | 0.5–1.5 | 按住时的缩放。小于 1 缩小，大于 1 像 iOS 26 交互玻璃那样放大。走 View 变换，可以溢出自身布局边界；玻璃贴着父容器边缘时给父容器设 `clipChildren="false"` |
@@ -851,7 +854,7 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 | `setSecondaryShape(rect: RectF?, cornerRadiusPx: Float = 999f, smoothing: Float = 48f)` | **33+** 双形状 smin 黏连合并 |
 | `setGlassTint(color: Int, strength: Float)` | 给玻璃染色，`strength` 0–1 取代 `color` 自带的 alpha |
 | `setBackdropSource(source: View?)` | 捕获指定视图而非直接父容器，摆脱层级约束，**保留 GPU 管线** |
-| `setCustomBackdropCapture(capture: (RectF) -> Bitmap?)` | 自己提供背景位图。会强制回退 CPU 管线，优先用 `setBackdropSource` |
+| `setCustomBackdropCapture(capture: (RectF) -> Bitmap?)` | 提供调用方持有的背景位图。CPU 管线会生成快照，调用方可以跨帧复用原图。背景是 View 时优先用 `setBackdropSource`。 |
 | `refreshAccessibilityState()` | 重新读取系统无障碍设置 |
 
 `ScrollEdgeBlurView` —— 滚动边缘渐进模糊：`edge`、`maxBlurRadius`、`bindScrollView(view)`。
@@ -897,6 +900,9 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 避开包含玻璃的容器，并将缓存尺寸限制在窗口大小和 GPU 纹理上限内。应用已有的硬件层、软件层
 保持不变；库创建的图层在最后一块玻璃释放、切换背景来源或离开 GPU 管线后恢复。
 后续添加 WebView 或改变布局也能更新缓存，不需要持续重绘玻璃。
+应用如果要接管正在使用的缓存层，请对缓存视图调用
+`LiquidGlassView.setBackdropLayerType(webViewport, View.LAYER_TYPE_HARDWARE, paint)`，
+玻璃释放缓存后会保留应用的硬件层和画笔。
 
 优先让 WebView 自身保持视口大小并在内部滚动。若使用 `ScrollView` 包住 `wrap_content` 的长网页，
 外层滚动容器应限制在可视区域内，`backdropSource` 指向该容器**上方的祖先**：

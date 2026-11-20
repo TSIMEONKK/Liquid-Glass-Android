@@ -38,6 +38,12 @@
 #endif
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+static inline int nearest_pixel_index(float coordinate, int size) {
+    // 先钳位浮点坐标，避免异常值或过大的偏移在转整型时溢出。
+    if (!std::isfinite(coordinate)) return 0;
+    return static_cast<int>(std::clamp(coordinate + 0.5f, 0.0f, static_cast<float>(size - 1)));
+}
+
 /**
  * 双线性插值采样单个颜色通道
  * 
@@ -60,10 +66,11 @@ static inline uint8_t sample_bilinear_channel(
     int channelOffset
 ) {
     // 边界检查
-    if (x < 0.0f || x >= width - 1.0f || y < 0.0f || y >= height - 1.0f) {
-        int clampedX = std::max(0, std::min(width - 1, static_cast<int>(x + 0.5f)));
-        int clampedY = std::max(0, std::min(height - 1, static_cast<int>(y + 0.5f)));
-        return pixels[clampedY * stride + clampedX * 4 + channelOffset];
+    if (!std::isfinite(x) || !std::isfinite(y) ||
+        x < 0.0f || x >= width - 1.0f || y < 0.0f || y >= height - 1.0f) {
+        const int clampedX = nearest_pixel_index(x, width);
+        const int clampedY = nearest_pixel_index(y, height);
+        return pixels[static_cast<size_t>(clampedY) * stride + static_cast<size_t>(clampedX) * 4 + channelOffset];
     }
     
     // 获取整数部分和小数部分
@@ -76,8 +83,8 @@ static inline uint8_t sample_bilinear_channel(
     float fy = y - y0;  // Y 方向的小数部分（权重）
     
     // 获取 4 个角的像素值
-    const uint8_t* row0 = pixels + y0 * stride;
-    const uint8_t* row1 = pixels + y1 * stride;
+    const uint8_t* row0 = pixels + static_cast<size_t>(y0) * stride;
+    const uint8_t* row1 = pixels + static_cast<size_t>(y1) * stride;
     
     float c00 = row0[x0 * 4 + channelOffset];  // 左上
     float c10 = row0[x1 * 4 + channelOffset];  // 右上
@@ -118,10 +125,10 @@ static inline uint8_t sample_nearest_channel(
     int channelOffset
 ) {
     // 四舍五入到最近的整数坐标
-    int clampedX = std::max(0, std::min(width - 1, static_cast<int>(x + 0.5f)));
-    int clampedY = std::max(0, std::min(height - 1, static_cast<int>(y + 0.5f)));
+    const int clampedX = nearest_pixel_index(x, width);
+    const int clampedY = nearest_pixel_index(y, height);
 
-    return pixels[clampedY * stride + clampedX * 4 + channelOffset];
+    return pixels[static_cast<size_t>(clampedY) * stride + static_cast<size_t>(clampedX) * 4 + channelOffset];
 }
 
 /**
@@ -369,6 +376,8 @@ void chromatic_dispersion_rgba8888(
     LOGD("Dispersion: Processing %dx%d, refThickness=%.2f, refFactor=%.2f, refDispersion=%.2f, dpr=%.2f",
          width, height, refThickness, refFactor, refDispersion, dpr);
 
+    // JNI 可被直接调用。折射率至少为 1，反正弦的输入也需防止舍入越界。
+    const float safeRefFactor = std::isfinite(refFactor) ? std::max(1.0f, refFactor) : 1.5f;
     // 调试：采样几个关键像素
     bool debugSamples = true;
 
@@ -388,8 +397,8 @@ void chromatic_dispersion_rgba8888(
             float edgeFactor = 0.0f;
             if (nmerged < refThickness) {
                 float x_R_ratio = 1.0f - nmerged / refThickness;
-                float thetaI = asinf(powf(x_R_ratio, 2.0f));
-                float thetaT = asinf(1.0f / refFactor * sinf(thetaI));
+                float thetaI = asinf(std::clamp(x_R_ratio * x_R_ratio, 0.0f, 1.0f));
+                float thetaT = asinf(std::clamp(sinf(thetaI) / safeRefFactor, -1.0f, 1.0f));
                 edgeFactor = -tanf(thetaT - thetaI);
 
                 // 边界检查
