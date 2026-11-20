@@ -385,6 +385,43 @@ anywhere in the tree, the overlap is computed from screen coordinates, and scrol
 repaints the glass automatically. Note that glass inside a `ScrollView` scrolling *with* the
 content sees a fixed backdrop by definition — that's physically correct, not a bug.
 
+**Glass over a `WebView`: why does the WebView keep redrawing on a static page?**
+The current source automatically enables a shared hardware cache for WebViews in GPU
+backdrops. It chooses a background branch below the capture source, excludes containers
+that contain the glass, and limits the cache to the window size and GPU texture limits.
+Existing application-owned hardware/software layers are preserved; library-created layers
+are restored after the last glass releases them, changes source, or leaves the GPU path.
+New WebViews and layout changes are handled without enabling continuous glass redraws.
+
+Prefer a viewport-sized WebView that scrolls itself. For a tall `wrap_content` WebView
+inside a `ScrollView`, keep the outer scrolling/container view bounded to the visible
+viewport, and point `backdropSource` at an ancestor **above** that container:
+
+```kotlin
+glass.backdropSource = webViewport.parent as View
+glass.enableDynamicBackground = true
+```
+
+The capture source itself is drawn directly, so its own hardware layer is not used for
+capture. Do not point `backdropSource` directly at a WebView when relying on this cache.
+If no independent bounded branch exists, add a viewport-sized wrapper; the library will
+not allocate a texture for an entire oversized page or cache an ancestor containing glass.
+Containers with `clipChildren = false` are skipped so overflow stays visible.
+The cost is a bounded texture per cached background branch.
+
+**For published v2.0.11 and earlier**, enable the layer yourself on the bounded background
+container (or on a viewport-sized WebView), keeping the capture source above it:
+
+```kotlin
+webViewport.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+glass.backdropSource = webViewport.parent as View
+```
+
+Without isolation, Chromium's draw functor runs in both the window and the glass's
+offscreen layer with different viewport/transform constraints, causing continuous redraws
+even on a static page. A cache executes the functor once and shares its texture.
+`enableDynamicBackground = false` and `offscreenPreRaster = true` do not replace this cache.
+
 **Can I put glass in a `Dialog` / `BottomSheetDialog` / `PopupWindow`?**
 Yes — the demo app's **Overlays** scene is a working `BottomSheetDialog`. Three things differ
 from the in-activity case:
@@ -854,6 +891,37 @@ glass.blurMethod = BlurMethod.SMART         // 合法枚举名见下方表格
 如果两者没法放在同一个父容器里，就把 `backdropSource` 指向那个滚动视图——玻璃可以待在树的
 任意位置，覆盖区域按屏幕坐标实时算，滚动时自动重绘。另外，玻璃如果是**跟着内容一起滚动**的，
 它看到的背景本来就不变，这是物理正确的结果，不是 bug。
+
+**玻璃盖在 `WebView` 上，页面静止时 WebView 为什么还在一直重绘？**
+当前源码会自动为 GPU 背景里的 WebView 启用共享硬件缓存：选择位于捕获来源下方的独立背景分支，
+避开包含玻璃的容器，并将缓存尺寸限制在窗口大小和 GPU 纹理上限内。应用已有的硬件层、软件层
+保持不变；库创建的图层在最后一块玻璃释放、切换背景来源或离开 GPU 管线后恢复。
+后续添加 WebView 或改变布局也能更新缓存，不需要持续重绘玻璃。
+
+优先让 WebView 自身保持视口大小并在内部滚动。若使用 `ScrollView` 包住 `wrap_content` 的长网页，
+外层滚动容器应限制在可视区域内，`backdropSource` 指向该容器**上方的祖先**：
+
+```kotlin
+glass.backdropSource = webViewport.parent as View
+glass.enableDynamicBackground = true
+```
+
+捕获来源自身走公开的 `draw()`，不会使用它自己的硬件层。因此依赖自动缓存时，不要把
+`backdropSource` 直接指向 WebView。如果找不到独立且有界的背景分支，需要增加视口大小的包装容器；
+库不会给整张超长网页分配纹理，也不会缓存包含玻璃的祖先。`clipChildren = false` 的容器会被跳过，
+避免改变子项越界绘制。代价是每个被缓存的背景分支多一张有界纹理。
+
+**已发布的 v2.0.11 及更早版本**需要应用自行给有界背景容器（或视口大小的 WebView）开启硬件层，
+并让捕获来源位于它上方：
+
+```kotlin
+webViewport.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+glass.backdropSource = webViewport.parent as View
+```
+
+没有缓存隔离时，Chromium 的绘制 functor 会在窗口和玻璃离屏层中分别执行，两次视口和变换约束不同，
+导致静止页面也持续重绘。缓存让 functor 只执行一次，窗口和玻璃共享纹理。
+`enableDynamicBackground = false` 与 `offscreenPreRaster = true` 都不能代替缓存隔离。
 
 **能在 `Dialog` / `BottomSheetDialog` / `PopupWindow` 里用玻璃吗？**
 可以，demo app 的**弹层**场景就是一个跑通的 `BottomSheetDialog`。和 Activity 内相比有三点不同：

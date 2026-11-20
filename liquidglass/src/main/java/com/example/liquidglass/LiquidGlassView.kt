@@ -823,6 +823,11 @@ open class LiquidGlassView @JvmOverloads constructor(
      * - 玻璃超出 source 边界的部分捕获为透明，需要自行保证覆盖关系
      * - source 所在的树滚动时会自动触发重绘（见 [backdropScrollListener]）；
      *   内容以其它方式变化（动画等）需要自行 [invalidate] 或开 [enableDynamicBackground]
+     * - GPU 取样遇到 WebView 时，会自动给独立背景分支启用硬件缓存，避免 Chromium 持续重绘。
+     *   缓存容器必须位于 source 下方，不能包含玻璃，且尺寸不超过窗口与 GPU 纹理上限。
+     *   超长网页应使用有界的外层 ScrollView / FrameLayout，source 指向它的祖先。
+     *   source 直接指向 WebView 时不会启用这项自动缓存。
+     *   应用已有的图层设置保持不变，多块玻璃共享缓存，最后一个使用者释放后恢复库设置的图层。
      */
     var backdropSource: View? = null
         set(value) {
@@ -1010,7 +1015,7 @@ open class LiquidGlassView @JvmOverloads constructor(
     // 触摸交互状态
     private var touchX = 0f
     private var touchY = 0f
-    private var isPressed = false
+    private var isGlassPressed = false
 
     // 缩放状态：按压缩放（动画驱动）与弹性拉伸（拖拽驱动）相乘后
     // 应用到 View 变换属性（见 applyGlassScale）
@@ -1363,6 +1368,11 @@ open class LiquidGlassView @JvmOverloads constructor(
         canvas.drawPath(shapePath, shadowPaint)
     }
     
+    private fun releaseBackdropCaches() {
+        if (Build.VERSION.SDK_INT >= 33) lensRenderer?.releaseBackdropCache()
+        if (Build.VERSION.SDK_INT >= 31) hardwareBlur?.releaseBackdropCache()
+    }
+
     /**
      * 绘制玻璃效果（同步渲染版 - 稳定无闪烁）
      */
@@ -1373,6 +1383,7 @@ open class LiquidGlassView @JvmOverloads constructor(
 
         // ✅ 无障碍降级：不透明材质（Reduce Transparency）
         if (shouldRenderOpaque()) {
+            releaseBackdropCaches()
             drawOpaqueFallback(canvas)
             drawPressTintOverlay(canvas)
             return
@@ -1380,6 +1391,7 @@ open class LiquidGlassView @JvmOverloads constructor(
 
         // ✅ API 33+ 统一透镜管线（Liquid Glass 2.0：折射+色散+高光+融合）
         if (tryDrawLensGlass(canvas, calculatedBlurRadius)) {
+            if (Build.VERSION.SDK_INT >= 31) hardwareBlur?.releaseBackdropCache()
             drawPressTintOverlay(canvas)
             // 边缘高光由着色器的法线光照完成，无需 Kotlin 层描边
             if (enableDynamicBackground) {
@@ -1390,6 +1402,7 @@ open class LiquidGlassView @JvmOverloads constructor(
 
         // ✅ API 31+ 旧 GPU 快速路径（模糊+饱和度，零拷贝）
         if (tryDrawHardwareBlur(canvas, calculatedBlurRadius)) {
+            if (Build.VERSION.SDK_INT >= 33) lensRenderer?.releaseBackdropCache()
             drawGlassTintOverlay(canvas)
             drawPressTintOverlay(canvas)
             if (enableEdgeHighlight) {
@@ -1400,6 +1413,8 @@ open class LiquidGlassView @JvmOverloads constructor(
             }
             return
         }
+
+        releaseBackdropCaches()
 
         // 旧管线需要位移贴图（透镜管线跳过了生成，回退时补上）
         if (enableChromaticAberration && displacementMaps == null) {
@@ -1605,7 +1620,7 @@ open class LiquidGlassView @JvmOverloads constructor(
 
         // —— 按压/触摸（量化到 0.01） ——
         val press = (pressDepth * 100f).toInt() / 100f
-        val tAmp = if (isPressed || press > 0f) press else 0f
+        val tAmp = if (isGlassPressed || press > 0f) press else 0f
         val tx = (touchX * 2f).toInt() / 2f
         val ty = (touchY * 2f).toInt() / 2f
 
@@ -2169,17 +2184,23 @@ open class LiquidGlassView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
+        // 点击、长按、Tooltip 和移出后的取消由框架统一处理，避免重复派发点击。
+        val handled = super.onTouchEvent(event)
+        if (!isEnabled) {
+            if (isGlassPressed) releaseTouchFeedback()
+            return handled
+        }
+
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchX = event.x
                 touchY = event.y
-                isPressed = true
+                isGlassPressed = true
                 updateTouchOffset(event.x, event.y)
                 if (enablePressEffect) {
                     animateScale(true)
                     animatePress(true)
                 }
-                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 touchX = event.x
@@ -2188,26 +2209,21 @@ open class LiquidGlassView @JvmOverloads constructor(
                 if (enablePressEffect) {
                     updateElasticScale()
                 }
-                return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isPressed = false
-                touchOffsetX = 0f
-                touchOffsetY = 0f
-                // 无条件归位：即使按住期间效果被关闭，也不能卡在缩放状态
-                animateScale(false)
-                animatePress(false)
-                // 事件被这里消费了，不自己派发的话 OnClickListener 永远不会触发；
-                // 手指移出视图后抬起视为取消，与标准 Button 行为一致
-                if (event.action == MotionEvent.ACTION_UP && isClickable &&
-                    event.x in 0f..width.toFloat() && event.y in 0f..height.toFloat()
-                ) {
-                    performClick()
-                }
-                return true
-            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> releaseTouchFeedback()
+            else -> return handled
         }
-        return super.onTouchEvent(event)
+        // 没有点击监听的玻璃仍接收后续事件，让按压动效能够完整归位。
+        return true
+    }
+
+    private fun releaseTouchFeedback() {
+        isGlassPressed = false
+        touchOffsetX = 0f
+        touchOffsetY = 0f
+        // 按住期间关闭效果也要归位。
+        animateScale(false)
+        animatePress(false)
     }
 
     /**
